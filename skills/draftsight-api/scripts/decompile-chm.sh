@@ -20,10 +20,13 @@ DEFAULT=(
   DraftSightConnected.chm
 )
 
-names=("${@:-}")
-if [ ${#names[@]} -eq 0 ]; then names=("${DEFAULT[@]}"); fi
+if [ "$#" -eq 0 ]; then names=("${DEFAULT[@]}"); else names=("$@"); fi
 
 for chm in "${names[@]}"; do
+  if [ ! -f "$(cygpath -u "$HELP_WIN")/$chm" ]; then
+    echo "skip: $chm not found in $HELP_WIN" >&2
+    continue
+  fi
   base="${chm%.chm}"
   mkdir -p "$OUT_ROOT/$base"
   outwin="$(cygpath -w "$OUT_ROOT/$base")"
