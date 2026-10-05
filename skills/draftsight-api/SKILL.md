@@ -1,6 +1,6 @@
 ---
 name: draftsight-api
-description: Drive DraftSight 2026 through its local HTTP/JSON API on 127.0.0.1:7776 - create and edit DWG drawings programmatically, export views, and verify results by reading geometry back. Use when generating or modifying DraftSight drawings, calling dsSketchManager / dsDocument / dsApplication, automating CAD, or consulting the DraftSight API reference.
+description: Drive DraftSight 2026 through COM automation (the transport that works) or its local HTTP/JSON API on 127.0.0.1:7776 - create and edit DWG drawings programmatically, read the live selection, export views, and verify results by reading geometry back. Use when generating or modifying DraftSight drawings, calling dsSketchManager / dsDocument / dsApplication, automating CAD, or consulting the DraftSight API reference.
 ---
 
 # DraftSight HTTP/JSON API
@@ -15,9 +15,33 @@ DraftSight 2026 (verified on 26.4.0.5067) exposes a local JSON API. Two processe
 | `DraftSight.exe` | the app; listens on `7775` (jsServer) |
 | `dsHttpApiService` | the broker; listens on `127.0.0.1:7776` and **survives DraftSight restarts** |
 
-DraftSight must be running. The agent talks to the broker, never the GUI.
+DraftSight must be running. COM talks to the app itself; HTTP talks to the broker.
 
-## Transport
+## Transport: COM first
+
+**Prefer COM.** Same object model, no broker, no ports, no Windows service, no `macroId` epochs, and no file-path sandbox. It is also the only transport that currently works here - the HTTP broker has a reproducible crash-on-first-request defect (`references/protocol.md`).
+
+| | COM | HTTP/JSON |
+|---|---|---|
+| Endpoint | running `DraftSight.exe`, via the ROT | `dsHttpApiService` on `127.0.0.1:7776` |
+| Verified | 26 entities created, live selection read back, zero failures | 3 h 07 m of correct service, then dead |
+| Output paths | unrestricted - exports land straight in the vault | sandboxed to `C:\ProgramData\Dassault Systemes\DraftSight\` |
+| Host | Windows PowerShell 5.1 (`GetActiveObject` was removed from .NET Core / PS 7) | any language that can POST |
+
+```powershell
+$app  = [Runtime.InteropServices.Marshal]::GetActiveObject('DraftSight.Application')
+$doc  = $app.GetActiveDocument()
+$sk   = $doc.GetModel().GetSketchManager()   # on IModel, never on the document
+$selm = $doc.GetSelectionManager()
+$e    = $selm.GetSelectedObject(1, 0, 0)     # set 1, not 0 - a live pick is not in set 0
+$e.Handle; $e.Layer; $e.Radius; $e.GetArea(); $e.GetLength()
+$app.Zoom(0, $null, $null)                   # fit before export; exports the current view
+$doc.GetDocumentExporter().ExportToPng('D:\out.png', $true)
+```
+
+Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, and the selection-set table: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`.
+
+## HTTP/JSON transport
 
 ```
 POST http://127.0.0.1:7776
@@ -113,4 +137,4 @@ scripts/html2txt.sh docs/DraftSight/cmdref/command_reference_chart.htm | grep -i
 
 `ZoomExtents` **does not exist** in DraftSight - it is an AutoCAD-ism. The command reference lists `ZoomFit` ("Zooms to the drawing extents"), plus `Zoom`, `ZoomIn`, `ZoomOut`, `ZoomBack`, `ZoomDynamic`, `ZoomFactor`. That is exactly why `RunCommand("ZoomExtents")` printed `Unrecognized command` while still returning `dsRunCommand_Succeeded`. Check `docs/DraftSight/cmdref/` before passing any command string.
 
-See `references/protocol.md` for the failure catalogue and `references/signatures.md` for verified method signatures and enums.
+See `references/com-api.md` for the COM surface, `references/protocol.md` for the failure catalogue including the broker defect, and `references/signatures.md` for verified HTTP method signatures and enums.
