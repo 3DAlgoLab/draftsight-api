@@ -5,7 +5,17 @@
 #   usage: decompile-chm.sh DraftSight.chm  -> one file
 set -euo pipefail
 
-HELP_WIN='C:\Program Files\Dassault Systemes\DraftSight\Help\english'
+# The Help folder lives under the install root, which may be on any drive.
+# A root can exist as a Fonts-only stub, so probe for a real CHM, not the directory.
+HELP_WIN=''
+for root in 'D:\Program Files\Dassault Systemes\DraftSight' 'C:\Program Files\Dassault Systemes\DraftSight'; do
+  cand="$root\Help\english"
+  if [ -f "$(cygpath -u "$cand")/draftsightapi.chm" ]; then HELP_WIN="$cand"; break; fi
+done
+if [ -z "$HELP_WIN" ]; then
+  echo 'DraftSight Help\english not found - set HELP_WIN to <install root>\Help\english' >&2
+  exit 1
+fi
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_ROOT="$SKILL_DIR/docs"
 
