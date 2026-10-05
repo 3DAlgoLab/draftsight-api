@@ -10,7 +10,7 @@ Windows-specific.
 
 ## What it produces
 
-![A wizard drawn entirely through the DraftSight HTTP/JSON API](assets/wizard-ava-native.png)
+![A wizard drawn entirely through DraftSight COM automation](assets/wizard-ava-com.png)
 
 Every line above was placed by API calls - no mouse, no UI interaction, no manual drawing. The image
 is not a screenshot either: it is `dsDocument.ExportToPng`, DraftSight's own renderer writing the

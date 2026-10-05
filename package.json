@@ -6,6 +6,6 @@
   "license": "MIT",
   "pi": {
     "skills": ["./skills"],
-    "image": "https://raw.githubusercontent.com/3DAlgoLab/draftsight-api/master/assets/wizard-ava-native.png"
+    "image": "https://raw.githubusercontent.com/3DAlgoLab/draftsight-api/master/assets/wizard-ava-com.png"
   }
 }
