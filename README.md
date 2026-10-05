@@ -8,6 +8,24 @@ results by reading geometry back instead of trusting return codes.
 `C:\ProgramData\Dassault Systemes\DraftSight\` file sandbox, and the `hh.exe` help decompiler are all
 Windows-specific.
 
+## What it produces
+
+![A wizard drawn entirely through the DraftSight HTTP/JSON API](assets/wizard-ava-native.png)
+
+Every line above was placed by API calls - no mouse, no UI interaction, no manual drawing. The image
+is not a screenshot either: it is `dsDocument.ExportToPng`, DraftSight's own renderer writing the
+file, so the application verified the result instead of a window capture of it.
+
+The session that produced it also settled the parts of the API that are not in the manual:
+
+- API file I/O is confined to `C:\ProgramData\Dassault Systemes\DraftSight\`; every file crossing that boundary has to be staged there first
+- `SaveAs` is obsolete and fails for every option; `SaveAs2` is the call that works
+- `RunCommand` reports `Succeeded` for commands that do not exist - there is no `ZoomExtents`, the command is `ZoomFit`
+- `ExportToEmf` takes the jsServer down; `GetDocuments` preceded a crash
+
+That is what this skill carries: the working calls **and** the failures, so the next session starts
+from the answer instead of from the crash.
+
 ## Install
 
 ```bash
