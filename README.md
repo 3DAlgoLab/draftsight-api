@@ -45,6 +45,9 @@ bash skills/draftsight-api/scripts/decompile-chm.sh
 Requires DraftSight installed at `C:\Program Files\Dassault Systemes\DraftSight\`. The skill is
 useful without `docs/`; the reference just makes it able to look signatures up instead of guessing.
 
+**`pi update --extensions` deletes `docs/`.** Pi cleans untracked files when it reconciles a git
+package, so the reference is removed on every update. Re-run the command above afterwards.
+
 Pi clones git sources to `~/.pi/agent/git/github.com/3DAlgoLab/draftsight-api` and identifies them by
 repository URL, so a local copy of this folder and the installed clone never load twice.
 
