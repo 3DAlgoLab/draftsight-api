@@ -65,7 +65,7 @@ ISketchManager    InsertCircle(double cx, double cy, double cz, double radius)
 ISketchManager    InsertPolyline2D(Variant flatXY, bool closed)
 ISketchManager    InsertArc(double, double, double, double, double, double)
 ISketchManager    InsertSpline(Variant, bool, double x6, ...)
-ISketchManager    GetEntities(ISelectionFilter, Variant, Variant, Variant)
+ISketchManager    GetEntities(ISelectionFilter, Variant, Variant, Variant)   # declared void - see below
 ISketchManager    SetObjectErased(IDispatch, bool) / IsObjectErased(IDispatch)
 IApplication      Zoom(dsZoomRange_e, Variant, Variant)      # 0 = fit; see protocol.md
 IDocument         SaveAs(string, dsDocumentSaveAsOption_e, dsDocumentSaveError_e)
@@ -89,6 +89,14 @@ $e.GetBoundingBox([ref]$x1,[ref]$y1,[ref]$z1,[ref]$x2,[ref]$y2,[ref]$z2)
 ```
 
 `GetSelectedObjects` takes **two** arguments in COM - `(set, Variant)` - where the JS form took one. Calling it with one argument raises `Cannot find an overload`.
+
+`ISketchManager.GetEntities` is declared **`void`** in the type library, so the HTTP enumeration pattern does not port: every call shape PowerShell can build fails with `Exception setting "GetEntities": Cannot convert ... to type "Object"`. Enumerate a region with the selection manager instead:
+
+```
+ISelectionManager   SelectByWindow(IMathPoint, IMathPoint, bool) -> bool
+                    GetSelectedObjectCount(set) -> int
+                    GetSelectedObject(set, index, dsObjectType_e) -> entity
+```
 
 ## Selection sets - the trap
 
