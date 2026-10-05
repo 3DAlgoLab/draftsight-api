@@ -1,0 +1,4 @@
+# Shell scripts must keep LF: a CRLF shebang ("#!/usr/bin/env bash\r")
+# fails under git-bash with "bad interpreter". core.autocrlf=true would
+# otherwise convert these on checkout.
+*.sh text eol=lf
