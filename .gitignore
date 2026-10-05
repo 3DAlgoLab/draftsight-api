@@ -2,3 +2,4 @@
 # seconds with skills/draftsight-api/scripts/decompile-chm.sh
 skills/draftsight-api/docs/
 .vscode
+package-lock.json

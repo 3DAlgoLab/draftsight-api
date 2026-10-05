@@ -1,4 +1,4 @@
-# pi-draftsight-api
+# draftsight-api for pi-coding-agent
 
 A [pi](https://pi.dev) package: a skill for driving **DraftSight 2026** through its local HTTP/JSON
 API on `127.0.0.1:7776` - draw, edit, save, and export DWG files programmatically, and verify
