@@ -1,6 +1,6 @@
 {
   "name": "pi-draftsight-api",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Optional pi package: drive DraftSight 2026 on Windows through its local HTTP/JSON API, with the official reference decompiled on demand.",
   "keywords": ["pi-package", "draftsight", "cad", "dwg", "windows"],
   "license": "MIT",

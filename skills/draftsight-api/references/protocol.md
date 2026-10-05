@@ -25,10 +25,10 @@ Read-only probes (`GetVersion`, `GetActiveDocument`, `GetPathName`, `GetModel`, 
 
 Not a broken API. Two conditions must both hold:
 
-1. The document was opened **through the API** (`OpenDocument2`). A UI-opened document reached via `GetActiveDocument`, or an unsaved `NONAME_0.dwg`, exports `false`.
-2. Both the source document and the output path are inside `C:\ProgramData\Dassault Systemes\DraftSight\`.
+1. The **output path** is outside `C:\ProgramData\Dassault Systemes\DraftSight\`.
+2. The document is an unsaved `NONAME_0.dwg`.
 
-With both satisfied: `{"Success":true}`, 871x634 RGB PNG, clean line art.
+An earlier revision of this file claimed the document itself had to be opened through `OpenDocument2`, and that a UI-opened document exports `false`. **That claim is wrong.** A document opened in the UI at `D:\my-vault\41-dpi-kl61\test\draw-table.dwg`, reached through `GetActiveDocument`, exported `{"Success":true}` to a path inside the root. The sandbox checks the path argument, not where the document lives.
 
 ## The path sandbox - how it was proven
 
@@ -43,6 +43,26 @@ With both satisfied: `{"Success":true}`, 871x634 RGB PNG, clean line art.
 The failure follows the **path**, not the file. Stale `test.dwl` / `test.dwl2` locks were removed and retried - still `null`, so locks were never the cause.
 
 `SaveAs2` shows the same boundary: `dsDocumentSave_Succeeded` inside the root, `dsDocumentSave_GenericError` writing to the vault.
+
+## Epochs churn inside a session
+
+`macroId` is not stable for the length of a working session. Observed `1 -> 3 -> 7 -> 8` across a single table-drawing session with no manual restart of DraftSight. Any script that caches `id`/`macroId` across separate runs will eventually hit `jsServer connection Failed`.
+
+Re-walk `getApplication -> GetActiveDocument -> GetModel -> GetSketchManager` at the top of **every** script run, not only after a restart. Treat the epoch as per-invocation, not per-session.
+
+## The sandbox binds path arguments, not documents
+
+`OpenDocument2`, `SaveAs2`, and `ExportTo*` validate the path they are handed. They do not validate where an already-open document lives.
+
+| Call | Path argument | Result |
+|---|---|---|
+| `OpenDocument2` | vault | `null` |
+| `SaveAs2` | vault | `dsDocumentSave_GenericError` |
+| `SaveAs2` | inside the root | `dsDocumentSave_Succeeded` |
+| `ExportToPng` | inside the root, document lives in the vault | `{"Success":true}` |
+| `Save()` - no path | document already at `D:\my-vault\...` | `"dsDocumentSave_Succeeded"` |
+
+Drawing into a DWG the user already has open, and saving it in place, needs **no staging at all**. Stage only to open a file by path, or to save it to a new path.
 
 ## Staging workflow
 

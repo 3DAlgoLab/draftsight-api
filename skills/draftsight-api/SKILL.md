@@ -32,7 +32,7 @@ Content-Type: text/json;charset=UTF-8
 
 1. **Echo the owner object verbatim.** Every returned object is `{"id":N,"macroId":E,"type":"dsX"}`. Dropping `macroId` produces `"jsServer connection Failed"`. Always pass the whole object back as `owner`.
 2. **`macroId` is a session epoch.** It resets to 1 when DraftSight restarts. On restart every cached id is garbage - re-run `getApplication` and re-walk the chain.
-3. **API file I/O is sandboxed to `C:\ProgramData\Dassault Systemes\DraftSight\`.** `OpenDocument2`, `SaveAs2`, and `ExportTo*` all fail for any other path - vault, `Documents`, `C:\temp`, user profile. Stage the file inside that root, operate, copy the result back.
+3. **API file I/O is sandboxed to `C:\ProgramData\Dassault Systemes\DraftSight\`.** `OpenDocument2`, `SaveAs2`, and `ExportTo*` all fail for any other path - vault, `Documents`, `C:\temp`, user profile. Stage the file inside that root, operate, copy the result back. The check is on the **path argument**, not on the open document: a DWG already open outside the root can still be drawn into and `Save()`-ed in place without staging.
 
 ## Liveness check
 
