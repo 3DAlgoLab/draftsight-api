@@ -101,9 +101,11 @@ A version string means connected. `null` means the broker is up but has no live 
 - **Angles are radians.** Confirmed: `InsertArc(...,0,1.5707963)` read back `get_StartAngle = 1.5707963`.
 - Enum parameters take the **symbolic name as a string**, not the number: `"dsDocumentSaveAs_R2018_DWG"`, `"dsDocumentOpen_Default"`, `"dsEncoding_Default"`. Passing `28` gives the misleading `arguments[1], Options, should be type String`.
 - Never attach to a DraftSight instance holding unsaved production work. Check the autosave folder and open documents first.
-- **Region selection over COM needs flat x,y,z triples.** `SelectByPolygon` with x,y pairs returns `False` and selects nothing - a silent no-op that hides leftovers. `SelectByWindow` is unusable: no `IMathPoint` factory exists over COM.
+- **`SelectByWindow` works over COM; the point factory is on `IApplication`.** `$app.GetMathUtility().CreatePoint(x,y,z)` returns the `IMathPoint`. No `CreateMathPoint` exists on `IDocument`, `IModel`, or `ISketchManager`, so grepping only those three produces a false "unusable". A full-extents window is the entity inventory; classify hits with `$app.GetObjectType($e)` (89 = table, 24 = text).
+- **`SelectByPolygon` needs flat x,y,z triples.** x,y pairs return `False` and select nothing - a silent no-op that hides leftovers.
 - **A filtered `Get-Member` list is not proof of absence.** Anchor the name regex and you will miss methods that exist. See `references/com-api.md`.
 - Erase any probe entity in the same script that created it. Entities have no `Delete()`; use `ISketchManager.SetObjectErased($e, $true)`.
+- **Grep the working tree for earlier `*.ps1` before probing the API from scratch.** A previous session's scratch script is verified prior art. Re-deriving its signatures is how confident wrong claims get written into this skill.
 
 ## Verification loop
 

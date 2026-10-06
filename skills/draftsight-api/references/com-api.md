@@ -99,16 +99,32 @@ $e.GetBoundingBox([ref]$x1,[ref]$y1,[ref]$z1,[ref]$x2,[ref]$y2,[ref]$z2)
 
 `GetSelectedObjects` takes **two** arguments in COM - `(set, Variant)` - where the JS form took one. Calling it with one argument raises `Cannot find an overload`.
 
-`ISketchManager.GetEntities` is declared **`void`** in the type library, so the HTTP enumeration pattern does not port: every call shape PowerShell can build fails with `Exception setting "GetEntities": Cannot convert ... to type "Object"`. Enumerate a region with the selection manager instead:
+`ISketchManager.GetEntities` is declared **`void`** in the type library, so the HTTP enumeration pattern does not port: every call shape PowerShell can build fails with `Exception setting "GetEntities": Cannot convert ... to type "Object"`. Enumerate with the selection manager instead:
 
 ```
-ISelectionManager   SelectByPolygon(CoordinateDblArray, Crossing) -> bool   # flat x,y,z triples
+IApplication        GetMathUtility() -> IMathUtility
+IMathUtility        CreatePoint(x, y, z) -> IMathPoint
+IApplication        GetObjectType(IDispatch) -> dsObjectType_e (int)
+ISelectionManager   SelectByWindow(IMathPoint, IMathPoint, Crossing) -> bool
+                    SelectByPolygon(CoordinateDblArray, Crossing) -> bool   # flat x,y,z triples
                     GetSelectedObjectCount(set) -> int
                     GetSelectedObject(set, index, dsObjectType_e) -> entity
                     ClearSelections(set)
 ```
 
-**`SelectByWindow` is declared but unusable over COM.** It takes `IMathPoint`, and no `CreateMathPoint` exists on `IDocument`, `IModel`, or `ISketchManager`. `SelectByPolygon` is the only working region select, and it needs **flat x,y,z triples**: `@(0,0,0, 80,0,0, 80,-25,0, 0,-25,0)`. Hand it flat x,y pairs and it returns `False` and selects nothing - a silent no-op, not an error.
+Full entity inventory over COM - a window over the whole drawing:
+
+```powershell
+$mu = $app.GetMathUtility()
+$selm.SelectByWindow($mu.CreatePoint(-1e6,-1e6,0), $mu.CreatePoint(1e6,1e6,0), $true)   # -> True
+# hits land in sets 0, 2 and 3; classify each with $app.GetObjectType($e)
+```
+
+Observed `GetObjectType` codes: **89 = table**, **24 = text**.
+
+**The `IMathPoint` factory is on `IApplication`, not on the document.** No `CreateMathPoint` exists on `IDocument`, `IModel`, or `ISketchManager` - grepping those three and concluding `SelectByWindow` is "unusable" is a wrong answer you can reach without ever asking the application object for `GetMathUtility`.
+
+`SelectByPolygon` needs **flat x,y,z triples**: `@(0,0,0, 80,0,0, 80,-25,0, 0,-25,0)`. Hand it flat x,y pairs and it returns `False` and selects nothing - a silent no-op, not an error.
 
 ## Tables over COM
 
@@ -155,7 +171,7 @@ $e = $selm.GetSelectedObject(1, 0, 0)   # set, index, dsObjectType_e (0 resolves
 
 `GetSelectedObjectCount` returns a plain `int`, so it is a reliable liveness probe - the COM equivalent of `GetVersion` on HTTP.
 
-**Programmatic selection does not use set 1.** `SelectByPolygon` put its hits in sets **0 and 2** and left set 1 empty - the opposite of a mouse pick. Probe every set before reading, and `ClearSelections(set)` afterwards.
+**Programmatic selection does not use set 1.** `SelectByPolygon` put its hits in sets **0 and 2**; `SelectByWindow` used **0, 2 and 3**. Both left set 1 empty - the opposite of a mouse pick. Probe every set before reading, and `ClearSelections(set)` afterwards.
 
 ## Entity protocol
 

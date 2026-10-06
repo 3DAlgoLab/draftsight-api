@@ -98,7 +98,7 @@ The rules that cost the most to rediscover:
 - `SaveAs` is obsolete - use `SaveAs2`.
 - `ExportTo*` and `SaveAs2` return values are evidence; `RunCommand`'s `"Succeeded"` is not.
 - DraftSight command names are not AutoCAD's: there is no `ZoomExtents`, the command is `ZoomFit`.
-- Over COM, region selection needs flat x,y,z triples and returns `False` for the wrong shape - a silent no-op, not an error.
+- Over COM, `SelectByPolygon` needs flat x,y,z triples and returns `False` for the wrong shape - a silent no-op, not an error. `SelectByWindow` works via `IApplication.GetMathUtility().CreatePoint()`; the factory is on the application, not the document.
 - Absence from a filtered `Get-Member` list proves nothing; an anchored regex hid `SetColumnWidthAt` and produced a wrong rule that had to be retracted.
 
 ## Develop
