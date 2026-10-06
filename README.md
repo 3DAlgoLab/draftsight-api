@@ -75,9 +75,13 @@ repository URL, so a local copy of this folder and the installed clone never loa
 skills/draftsight-api/
 ├── SKILL.md              routing, the hard rules, trust table, do-not-call list
 ├── references/
+│   ├── com-api.md        COM transport: signatures, traps, tables, selection sets
 │   ├── protocol.md       failure catalogue, crash log, sandbox proof
 │   └── signatures.md     verified signatures and enum values
 ├── scripts/
+│   ├── com-inspect.ps1       read the live selection over COM
+│   ├── com-draw-example.ps1  draw, fit, export - the minimal COM loop
+│   ├── com-table.ps1         CSV to a sized DraftSight table, verified by read-back
 │   ├── ds-call.sh        handshake + one-call API client
 │   ├── decompile-chm.sh  regenerate docs/ from the installed DraftSight help
 │   └── html2txt.sh       strip tags from help pages for grepping
@@ -94,6 +98,8 @@ The rules that cost the most to rediscover:
 - `SaveAs` is obsolete - use `SaveAs2`.
 - `ExportTo*` and `SaveAs2` return values are evidence; `RunCommand`'s `"Succeeded"` is not.
 - DraftSight command names are not AutoCAD's: there is no `ZoomExtents`, the command is `ZoomFit`.
+- Over COM, region selection needs flat x,y,z triples and returns `False` for the wrong shape - a silent no-op, not an error.
+- Absence from a filtered `Get-Member` list proves nothing; an anchored regex hid `SetColumnWidthAt` and produced a wrong rule that had to be retracted.
 
 ## Develop
 

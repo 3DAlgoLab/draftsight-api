@@ -24,7 +24,7 @@ DraftSight must be running. COM talks to the app itself; HTTP talks to the broke
 | | COM | HTTP/JSON |
 |---|---|---|
 | Endpoint | running `DraftSight.exe`, via the ROT | `dsHttpApiService` on `127.0.0.1:7776` |
-| Verified | 26 entities created, live selection read back, zero failures | 3 h 07 m of correct service, then dead |
+| Verified | 26 entities, then a 43x7 CSV-fed table with per-column widths; selection read back, zero failures | 3 h 07 m of correct service, then dead |
 | Output paths | unrestricted - exports land straight in the vault | sandboxed to `C:\ProgramData\Dassault Systemes\DraftSight\` |
 | Host | Windows PowerShell 5.1 (`GetActiveObject` was removed from .NET Core / PS 7) | any language that can POST |
 
@@ -39,7 +39,7 @@ $app.Zoom(0, $null, $null)                   # fit before export; exports the cu
 $doc.GetDocumentExporter().ExportToPng('D:\out.png', $true)
 ```
 
-Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, and the selection-set table: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`.
+Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, the selection-set table, and the table API: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`, `scripts/com-table.ps1`.
 
 ## HTTP/JSON transport
 
@@ -80,6 +80,8 @@ A version string means connected. `null` means the broker is up but has no live 
 | `ExportToPng/Jpg/Bmp/Svg` | `{"Success":true/false}` | **Yes** - matched reality every time |
 | `SaveAs2` | `{"Errors":"dsDocumentSave_Succeeded"}` | **Yes** |
 | `GetEntities`, `GetBoundingBox` | real data | **Yes** |
+| `ExportToPng` over COM | nothing (void) | Neutral - confirm by file mtime |
+| `SelectByPolygon` over COM | `True`/`False` | **Yes**, but `False` also means "wrong argument shape", not "nothing there" |
 | `RunCommand` | `"dsRunCommand_Succeeded"` | **No** - returned success while DraftSight printed `Unrecognized command`. Verify by reading geometry or the command window. |
 | `Zoom`, `StartUndoRecord`, `StopUndoRecord`, `CloseDocument` | `null` | Neutral - `null` means no return value, not failure |
 | `OpenDocument2` | `null` | **Failure** - a real open returns a document object |
@@ -99,6 +101,9 @@ A version string means connected. `null` means the broker is up but has no live 
 - **Angles are radians.** Confirmed: `InsertArc(...,0,1.5707963)` read back `get_StartAngle = 1.5707963`.
 - Enum parameters take the **symbolic name as a string**, not the number: `"dsDocumentSaveAs_R2018_DWG"`, `"dsDocumentOpen_Default"`, `"dsEncoding_Default"`. Passing `28` gives the misleading `arguments[1], Options, should be type String`.
 - Never attach to a DraftSight instance holding unsaved production work. Check the autosave folder and open documents first.
+- **Region selection over COM needs flat x,y,z triples.** `SelectByPolygon` with x,y pairs returns `False` and selects nothing - a silent no-op that hides leftovers. `SelectByWindow` is unusable: no `IMathPoint` factory exists over COM.
+- **A filtered `Get-Member` list is not proof of absence.** Anchor the name regex and you will miss methods that exist. See `references/com-api.md`.
+- Erase any probe entity in the same script that created it. Entities have no `Delete()`; use `ISketchManager.SetObjectErased($e, $true)`.
 
 ## Verification loop
 

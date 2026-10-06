@@ -96,7 +96,7 @@ dsTable.SetRowHeight(Height)                 # every row
 dsTable.SetTextHeight(CellType, Height)      dsTable.GetCellTextHeight(Row, Column)
 ```
 
-Rows grow to fit text height plus cell margins; they never clip. Requesting `RowHeight = 7` with text height 3.0 read back as ~8.68, and the header row as ~10.49.
+Rows grow to fit text height plus cell margins; they never clip. Columns behave the other way: cells **wrap** rather than clip, so a column too narrow for its text silently grows the row instead of truncating. At text height 3.0 the default font needs ~2.5 mm per ASCII character plus ~10 mm of margin (CJK ~1.7x). The `*At` setters exist over COM as well; only `GetColumnWidthAt` is absent on both transports. Requesting `RowHeight = 7` with text height 3.0 read back as ~8.68, and the header row as ~10.49.
 
 Also: `SetCellType`, `SetCellAlignment(Row, Column, Alignment)`, `SetCellBackgroundColor`, `SetCellTextColor`, `MergeCells(MinRow, MaxRow, MinColumn, MaxColumn)`, `UnmergeCells`, `InsertRow(Row, Height)`, `InsertColumn(Column, Width)`, `DeleteRow`, `DeleteColumn`, `GetPosition`, `SetPosition(X, Y, Z)`, `GetBoundingBox`, `SaveAsCSVFile(FileName)`.
 
