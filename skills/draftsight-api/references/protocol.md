@@ -1,4 +1,8 @@
-# Failure catalogue
+# Failure catalogue - HTTP/JSON transport
+
+The HTTP transport is the **fallback**; COM is primary and lives in `com-api.md`. This file exists
+because the HTTP path is where the failures are, and because the rules it taught (the path sandbox,
+`macroId` epochs) are HTTP rules that do not apply to COM.
 
 Every entry below was reproduced on this machine against DraftSight 26.4.0.5067.
 

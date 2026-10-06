@@ -3,23 +3,30 @@ name: draftsight-api
 description: Drive DraftSight 2026 through COM automation (the transport that works) or its local HTTP/JSON API on 127.0.0.1:7776 - create and edit DWG drawings programmatically, read the live selection, export views, and verify results by reading geometry back. Use when generating or modifying DraftSight drawings, calling dsSketchManager / dsDocument / dsApplication, automating CAD, or consulting the DraftSight API reference.
 ---
 
-# DraftSight HTTP/JSON API
+# DraftSight automation - COM first
 
 **Windows only.** The API broker, the file I/O sandbox, and the bundled help decompiler are all
 Windows-specific, so this ships as an optional pi package rather than a permanent skill.
 
-DraftSight 2026 (verified on 26.4.0.5067) exposes a local JSON API. Two processes matter:
+DraftSight 2026 (verified on 26.4.0.5067) exposes two transports onto the same object model.
+**COM is the primary transport and the only one that currently works.** The HTTP/JSON transport is
+documented here as a fallback and a failure catalogue: on this machine its broker dies on the first
+JS-RPC request on every build tried, and nothing on the client side recovers it
+(`references/protocol.md`). Everything below the `HTTP/JSON transport` heading is HTTP-specific
+unless the heading says otherwise - none of it applies to COM work.
+
+Two processes matter, both on the HTTP path:
 
 | Process | Role |
 |---|---|
 | `DraftSight.exe` | the app; listens on `7775` (jsServer) |
 | `dsHttpApiService` | the broker; listens on `127.0.0.1:7776` and **survives DraftSight restarts** |
 
-DraftSight must be running. COM talks to the app itself; HTTP talks to the broker.
+DraftSight must be running either way. COM talks to the app itself; HTTP talks to the broker.
 
-## Transport: COM first
+## COM transport - primary
 
-**Prefer COM.** Same object model, no broker, no ports, no Windows service, no `macroId` epochs, and no file-path sandbox. It is also the only transport that currently works here - the HTTP broker has a reproducible crash-on-first-request defect (`references/protocol.md`).
+**Use COM.** Same object model, no broker, no ports, no Windows service, no `macroId` epochs, and no file-path sandbox. It is also the only transport that currently works here - the HTTP broker has a reproducible crash-on-first-request defect (`references/protocol.md`).
 
 | | COM | HTTP/JSON |
 |---|---|---|
@@ -41,7 +48,7 @@ $doc.GetDocumentExporter().ExportToPng('D:\out.png', $true)
 
 Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, the selection-set table, and the table API: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`, `scripts/com-table.ps1`.
 
-## HTTP/JSON transport
+## HTTP/JSON transport - fallback, broken on this machine
 
 ```
 POST http://127.0.0.1:7776
@@ -52,19 +59,26 @@ Content-Type: text/json;charset=UTF-8
 
 `language` is only a label - the wire format is plain JSON, so any language can drive it. Use `scripts/ds-call.sh` for the handshake.
 
-## Three rules that cause every failure
+## Three HTTP rules that cause every failure
+
+COM has none of these: object references replace `{id, macroId, type}` handles, there is no epoch
+to go stale, and there is no path sandbox.
 
 1. **Echo the owner object verbatim.** Every returned object is `{"id":N,"macroId":E,"type":"dsX"}`. Dropping `macroId` produces `"jsServer connection Failed"`. Always pass the whole object back as `owner`.
 2. **`macroId` is a session epoch.** It resets to 1 when DraftSight restarts. On restart every cached id is garbage - re-run `getApplication` and re-walk the chain.
 3. **API file I/O is sandboxed to `C:\ProgramData\Dassault Systemes\DraftSight\`.** `OpenDocument2`, `SaveAs2`, and `ExportTo*` all fail for any other path - vault, `Documents`, `C:\temp`, user profile. Stage the file inside that root, operate, copy the result back. The check is on the **path argument**, not on the open document: a DWG already open outside the root can still be drawn into and `Save()`-ed in place without staging.
 
-## Liveness check
+## Liveness check (HTTP)
 
 Call `GetVersion` on the **dsApplication** object, never on `jsScriptManager` (that returns `null` and looks like a dead connection).
 
 A version string means connected. `null` means the broker is up but has no live jsServer link - do not proceed, reconnect instead.
 
-## Reconnect procedure
+Over COM the probe is cheaper and needs no broker: `GetActiveObject('DraftSight.Application')`
+succeeding, plus `GetSelectedObjectCount(set)` returning a plain `int`, confirms the app is live and
+answering.
+
+## Reconnect procedure (HTTP only)
 
 ```
 1. POST getApplication on {"type":"jsScriptManager"}   -> new app object, new macroId
@@ -74,6 +88,10 @@ A version string means connected. `null` means the broker is up but has no live 
 ```
 
 ## Trust table - which return values are evidence
+
+Rows without a qualifier are HTTP returns. Rows marked `over COM` are the COM form of the same
+call, and the two differ: `ExportToPng` returns `{"Success":true}` over HTTP and nothing at all
+over COM.
 
 | Call | Return | Trust |
 |---|---|---|
@@ -87,6 +105,9 @@ A version string means connected. `null` means the broker is up but has no live 
 | `OpenDocument2` | `null` | **Failure** - a real open returns a document object |
 
 ## Do not call
+
+Each entry names the transport it was observed on. Do not read an HTTP-path finding as proof that
+the COM call is safe, or the other way round.
 
 | Call | Why |
 |---|---|

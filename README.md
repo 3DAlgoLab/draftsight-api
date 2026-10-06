@@ -1,8 +1,13 @@
 # draftsight-api for pi-coding-agent
 
-A [pi](https://pi.dev) package: a skill for driving **DraftSight 2026** through its local HTTP/JSON
-API on `127.0.0.1:7776` - draw, edit, save, and export DWG files programmatically, and verify
-results by reading geometry back instead of trusting return codes.
+A [pi](https://pi.dev) package: a skill for driving **DraftSight 2026** on Windows through **COM
+automation** - draw, edit, save, and export DWG files programmatically, and verify results by
+reading geometry back instead of trusting return codes.
+
+COM is the primary transport because it is the only one that works: the local HTTP/JSON API on
+`127.0.0.1:7776` has a broker that crashes on the first JS-RPC request, reproduced on SP3 and SP4
+across two installs, with no client-side recovery. The HTTP path is still documented - as a
+fallback, and as the failure catalogue that produced most of the rules this skill carries.
 
 **Platform: Windows only.** DraftSight's API broker, the
 `C:\ProgramData\Dassault Systemes\DraftSight\` file sandbox, and the `hh.exe` help decompiler are all
@@ -16,7 +21,8 @@ Every line above was placed by API calls - no mouse, no UI interaction, no manua
 is not a screenshot either: it is `dsDocument.ExportToPng`, DraftSight's own renderer writing the
 file, so the application verified the result instead of a window capture of it.
 
-The session that produced it also settled the parts of the API that are not in the manual:
+The sessions that produced it also settled the parts of the API that are not in the manual
+(these findings are mostly on the HTTP path, which is where the surprises are):
 
 - API file I/O is confined to `C:\ProgramData\Dassault Systemes\DraftSight\`; every file crossing that boundary has to be staged there first
 - `SaveAs` is obsolete and fails for every option; `SaveAs2` is the call that works
@@ -76,7 +82,7 @@ skills/draftsight-api/
 ├── SKILL.md              routing, the hard rules, trust table, do-not-call list
 ├── references/
 │   ├── com-api.md        COM transport: signatures, traps, tables, selection sets
-│   ├── protocol.md       failure catalogue, crash log, sandbox proof
+│   ├── protocol.md       HTTP transport: failure catalogue, crash log, sandbox proof
 │   └── signatures.md     verified signatures and enum values
 ├── scripts/
 │   ├── com-inspect.ps1       read the live selection over COM
@@ -92,8 +98,9 @@ skills/draftsight-api/
 
 The rules that cost the most to rediscover:
 
-- Echo `{id, macroId, type}` back verbatim on every call; `macroId` is a session epoch that resets when DraftSight restarts.
-- API file I/O is confined to `C:\ProgramData\Dassault Systemes\DraftSight\`; any file crossing the boundary must be staged there first.
+- COM is the primary transport: same object model, no broker, no ports, no path sandbox. The HTTP rules below apply only to the fallback.
+- Echo `{id, macroId, type}` back verbatim on every HTTP call; `macroId` is a session epoch that resets when DraftSight restarts.
+- HTTP file I/O is confined to `C:\ProgramData\Dassault Systemes\DraftSight\`; any file crossing the boundary must be staged there first. COM writes anywhere.
 - Enum parameters take symbolic names as strings (`"dsDocumentSave_R2018_DWG"`), not integers.
 - `SaveAs` is obsolete - use `SaveAs2`.
 - `ExportTo*` and `SaveAs2` return values are evidence; `RunCommand`'s `"Succeeded"` is not.

@@ -1,4 +1,8 @@
-# Verified signatures
+# Verified signatures - HTTP/JSON transport
+
+These are the **HTTP** signatures, read from the shipped client library. For the COM surface - the
+primary transport - see `com-api.md`; the two are not interchangeable, and the sandbox and epoch
+rules below exist only on the HTTP path.
 
 All from `<install root>\APISDK\djLibrary\*.js`, confirmed by live calls. The install root is **not** always on `C:` - this machine has it at `D:\Program Files\Dassault Systemes\DraftSight\`, while `C:\Program Files\Dassault Systemes\DraftSight\` survives as a `Fonts`-only stub. Locate it by probing for `APISDK\djLibrary`, never by assuming a drive.
 
