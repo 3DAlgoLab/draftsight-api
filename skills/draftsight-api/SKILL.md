@@ -1,6 +1,6 @@
 ---
 name: draftsight-api
-description: Drive DraftSight 2026 through COM automation (the transport that works) or its local HTTP/JSON API on 127.0.0.1:7776 - create and edit DWG drawings programmatically, read the live selection, export views, and verify results by reading geometry back. Use when generating or modifying DraftSight drawings, calling dsSketchManager / dsDocument / dsApplication, automating CAD, or consulting the DraftSight API reference.
+description: Drive DraftSight 2026 through COM automation (the transport that works) or its local HTTP/JSON API on 127.0.0.1:7776 - create and edit DWG drawings programmatically, read the live selection, export views, plot sheet frames to PDF, and verify results by reading geometry back. Use when generating or modifying DraftSight drawings, calling dsSketchManager / dsDocument / dsApplication, automating CAD, or consulting the DraftSight API reference.
 ---
 
 # DraftSight automation - COM first
@@ -47,6 +47,8 @@ $doc.GetDocumentExporter().ExportToPng('D:\out.png', $true)
 ```
 
 Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, the selection-set table, and the table API: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`, `scripts/com-table.ps1`.
+
+**Parity rule: if the JS API has it, COM almost certainly has it.** The shipped JS layer (`install_dir\APISDK\djLibrary\ds<Interface>.js`) is a thin shim over the same object model and is **not a stable contract** - its arities drift and it hides out-parameters (`ExportToPdf`: 4 args in JS, 5 in the type library). Use the stubs to learn *what exists*, never the calling convention; `Get-Member` on the live `__ComObject` is the contract. Names differ: JS/HTTP say `dsPrintManager`, the COM type library says `IPrintManager`.
 
 ## HTTP/JSON transport - fallback, broken on this machine
 
@@ -128,6 +130,31 @@ the COM call is safe, or the other way round.
 - Erase any probe entity in the same script that created it. Entities have no `Delete()`; use `ISketchManager.SetObjectErased($e, $true)`.
 - **Grep the working tree for earlier `*.ps1` before probing the API from scratch.** A previous session's scratch script is verified prior art. Re-deriving its signatures is how confident wrong claims get written into this skill.
 
+## Plotting sheets to PDF
+
+Plotting lives on `IApplication.GetPrintManager()` -> `IPrintManager` (36 members). `IDocument` has no
+plot or print member at all - grepping its 85 members and finding nothing is a false negative, the
+call is on the application. Full surface plus the `[ref]` arity of every out-param getter:
+`references/com-api.md`.
+
+Runnable: `scripts/com-plot-frames.ps1` (find sheet frames, plot one PDF per frame) and
+`scripts/verify-plot.py` (page size, ink-to-edge distance, colored-pixel fraction).
+
+- **Sheet frames are found geometrically, not by name.** Production DWGs keep every sheet inside
+  *model space* as a drawn border; there is usually no `TITLE` / `BORDER` / `SHEET` layer or block to
+  select, and `ISelectionManager` has no `SelectByLayer` at all. Match closed polylines
+  (`dsPolyLineType` = 27) whose bounding box has an ISO A-series aspect ratio (~1.414). Borders come
+  as nested triples (outer / middle / inner), so collapse coincident corners or every frame counts 3x.
+- **Monochrome needs two settings, not one:** `StyleTable = 'monochrome.ctb'` *and*
+  `UseAssignedPrintStyle = $true`. With `$false` the table is dropped silently and reads back empty.
+  `GetAvailablePrintStyleTables` raises `DISP_E_BADCALLEE`; the tables are plain files in
+  `install_dir\Default Files\Print Styles\`.
+- **Margins are paper-dependent and non-zero by default** (A4: 20/20/7.5/7.5 mm). `SetPrintMargins(0,0,0,0)`
+  with `PrintOnCenter = $false` puts ink flush to the paper edge.
+- `PrintOut(Copies, FileName)` with `Printer = 'PDF'` needs a full path, overwrites silently, and
+  returns nothing. The built-in file plotters are `PDF`, `JPG`, `PNG`, `SVG` - no printer has to exist.
+
+
 ## Verification loop
 
 Prefer geometry read-back over pixels; it is deterministic and never touches the render pipeline.
@@ -148,7 +175,7 @@ Decompiled from the DraftSight Help folder by `scripts/decompile-chm.sh`. Look t
 
 | Directory | Pages | Contents |
 |---|---|---|
-| `docs/draftsightapi/` | 4,353 | API reference - classes, methods, enums, per-language examples |
+| `docs/draftsightapi/` | 4,353 | API reference - **pages are named by COM interface**: `Interop.dsAutomation~Interop.dsAutomation.IPrintManager~PrintOut.html`. Grep `IPrintManager`, not `dsPrintManager` |
 | `docs/DraftSight/` | 1,318 | application guide + **command reference**: `cmdref/command_reference_chart.htm`, `cmdvar/sv_cmdnames.htm` |
 | `docs/DraftSight_Lisp_Reference/` | 257 | AutoLISP reference |
 | `docs/DraftSightMech/` | 222 | mechanical |

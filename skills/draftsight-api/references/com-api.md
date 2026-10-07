@@ -4,6 +4,8 @@ Verified 2026-10-05 against DraftSight 2026 SP3 (`26.3.0.4078`) with the HTTP br
 
 Re-verified 2026-10-06 on 26.4.0.5067: a 43 x 7 BOM table written cell by cell from a CSV, per-column widths, geometry read back, Korean cell text intact. Runnable: `scripts/com-table.ps1`.
 
+Print/plot surface read live 2026-10-07 on 26.4.0.5067 - see `Printing and plotting`.
+
 ## Why COM instead of HTTP
 
 | | COM | HTTP/JSON |
@@ -75,6 +77,7 @@ IDocument         Save() -> dsDocumentSaveError_e
 IDocumentExporter ExportToPng(string, bool) / ExportToSvg / ExportToJpg / ExportToBmp
 IDocumentExporter ExportToTiff / ExportToStl / ExportToSld / ExportToEmf
 IDocumentExporter ExportToPdf(string, Variant, double, double, bool)
+IApplication      GetPrintManager() -> IPrintManager  # plotting lives here, never on IDocument
 IDocument         GetPathName()                       # there is no GetName() over COM
 IDocument         ScaleUnit                           # dsScaleUnit_e as int; 8 = Millimeters
 ISketchManager    GetBoundingBox(6 [ref] doubles)     # 1e20 -> -1e20 means an empty drawing
@@ -173,6 +176,12 @@ $e = $selm.GetSelectedObject(1, 0, 0)   # set, index, dsObjectType_e (0 resolves
 
 **Programmatic selection does not use set 1.** `SelectByPolygon` put its hits in sets **0 and 2**; `SelectByWindow` used **0, 2 and 3**. Both left set 1 empty - the opposite of a mouse pick. Probe every set before reading, and `ClearSelections(set)` afterwards.
 
+**There is no `SelectByLayer`.** `ISelectionManager` is geometric only - `SelectByWindow`, `SelectByPolygon`, `SelectByCrossline`, `SelectByPoint`. To select "everything on layer X", select a window and filter on `$e.Layer` yourself.
+
+`IDocument::GetObjectByHandle(string Handle, out dsObjectType_e ObjType)` takes **2 args**, the second an out-param: `$e = $doc.GetObjectByHandle('8fa9d', [ref]$ot)`. A 1-arg call raises an argument-count error.
+
+`IEntityHelper::Select(object Obj, bool SelectFlag)` is declared 2-arg but is **unusable from PowerShell**: both the 0-arg and the 2-arg call raise an argument-conversion error, because the `object Obj` parameter will not marshal. Select geometrically instead.
+
 ## Entity protocol
 
 Members present on a selected entity (a circle, read live):
@@ -199,6 +208,89 @@ GetLength() =  62.8318530717959  = 2 * pi * 10
 bbox (42,150,0) -> (62,170,0)    -> centre (52,160), 20 x 20
 ```
 
+## JS SDK stubs are an index, not a contract
+
+`install_dir\APISDK\djLibrary\ds<Interface>.js` - one file per interface, every method name on a single screen (`dsPrintManager.js`, `dsDocument.js`, `dsApplication.js`). Read it to learn **what exists**. Do not read it as the calling convention.
+
+**Parity rule: if the JS API has it, COM almost certainly has it.** Both layers sit on one object model; the JS layer is a thin `djProcessCommand` shim over the same interfaces. So "not in the JS stub" and "not in the JS docs" are **not** evidence of absence over COM - enumerate the `__ComObject` before concluding a feature is unreachable.
+
+**The JS layer is not a stable contract.** It is a convenience shim shipped with the SDK; its names and arities drift, and it hides out-parameters behind JS return values. Measured against the COM type library:
+
+| Member | JS stub | COM type library |
+|---|---|---|
+| `ExportToPdf` | 4 args | 5 args - trailing `out bool Success` |
+| `GetPrintMargins` | 0 args, returns values | 4 x `[out] double` |
+| `GetPrintRange` | 0 args | 7 x `[out]` |
+| `GetSelectedObjects` | 1 arg | 2 args |
+
+A JS signature is a hint about the **name**, never about the arity. `Get-Member` on the live object is the contract.
+
+**Name mapping.** JS/HTTP use `dsXxx`; the COM type library (`bin\dsAutomation.dll`) uses `IXxx`:
+
+```
+dsPrintManager      -> IPrintManager        dsDocument       -> IDocument / IDraftSightDocument
+dsApplication       -> IApplication         dsSketchManager  -> ISketchManager
+dsDocumentExporter  -> IDocumentExporter    dsSheet          -> ISheet
+```
+
+The decompiled `docs/draftsightapi/` is organised by the **COM** names - 161 interfaces across ~4,000 pages, e.g. `Interop.dsAutomation~Interop.dsAutomation.IPrintManager~PrintOut.html`. Grepping `dsPrintManager` there returns nothing; grep `IPrintManager`. Enum pages keep the `ds` prefix (`dsPrintRange_e`), and those are the values COM methods take - **as ints**, not as the symbolic strings the HTTP transport wants.
+
+## Printing and plotting - IPrintManager
+
+Read live 2026-10-07 on 26.4.0.5067: `GetPrintManager()` returns an `IPrintManager` with **36 members**, all reachable over COM.
+
+**Plotting is not on the document.** All 85 `IDocument` members contain no `Plot`, `Print`, or `PageSetup` - the only export hook there is `GetDocumentExporter()`. The print manager hangs off `IApplication`:
+
+```powershell
+$pm = $app.GetPrintManager()
+```
+
+Surface: `Printer` `PaperSize` `GetPaperSize` `SetClosestValidPaperSize` `AvailablePaperSizes` `AvailablePaperSizesInLocale` `PaperSizeInLocale` `ScaleToFit` `UserScale` `GetUserScaleValue` `SetUserScaleValue` `GetStandardScale` `SetStandardScale` `ScaleLineWeight` `GetPrintMargins` `SetPrintMargins` `GetPrintOffset` `SetPrintOffset` `StyleTable` `GetAvailablePrintStyleTables` `ViewDisplayStyle` `Quality` `Orientation` `PrintOnCenter` `PrintInverse` `PrintInBackground` `PrintSheetLast` `HideGeometryOnSheet` `UseAssignedLineWeight` `UseAssignedPrintStyle` `GetPrintRange` `SetPrintRange` `GetSheets` `SetSheets` `GetAvailablePrinters` `PrintOut(Copies, FileName)`.
+
+Every `Get*` here is out-param style; calling one bare raises `MethodException ... "0" arguments`:
+
+| Call | `[ref]` arguments |
+|---|---|
+| `GetPrintMargins` | 4 x double (top, bottom, left, right) |
+| `GetPrintOffset` | 2 x double |
+| `GetPaperSize` | 2 x double (length, width) |
+| `GetUserScaleValue` | 2 x double (paper units, drawing units) |
+| `GetStandardScale` | enum + double |
+| `GetPrintRange` | enum, string, bool, 4 x double |
+| `GetAvailablePrintStyleTables` | 1 x object array |
+
+Zero-arg and working: `GetAvailablePrinters()` (9 devices here), `AvailablePaperSizes()` (46 names, `Letter_(8.50_x_11.00_Inches)` style), `AvailablePaperSizesInLocale()`, `GetSheets()`.
+
+Verified reads on a live drawing: `Printer='None'`, `PaperSize=''`, `Orientation=1` (portrait), `Quality=2`, `PrintSheetLast=True`, `UseAssignedLineWeight`/`UseAssignedPrintStyle=True`, `GetPrintRange -> 2` (`dsPrintRange_DrawingBoundary`), margins `0 0 0 0`, `GetUserScaleValue -> 1/1`.
+
+Enums as ints: `dsPrintRange_e` All=1, DrawingBoundary=2, CurrentView=3, NamedView=4, SpecifyWindow=5 - `dsPrintOrientation_e` Portrait=1, Landscape=2 - `dsStandardPrintScale_e` 1:1=16, 1:2=17, 1:10=20, 1:20=22, 1:50=25, 1:100=26.
+
+**Plot to a file with no printer installed.** `Printer` accepts the four built-in file plotters `PDF`, `JPG`, `PNG`, `SVG` alongside real device names; with those, `PrintOut(Copies, FileName)` requires a full path and **overwrites an existing file silently**. The docs require `SetSheets` before `PrintOut`. **Verified 2026-10-07 on 26.4.0.5067:** thirteen model-space sheet frames plotted to thirteen single-page PDFs with no printer installed (`Printer` was `None`), no dialog, ~40-120 KB each. Working recipe:
+
+```powershell
+$pm.Printer     = 'PDF'
+$pm.ScaleToFit  = $true
+$pm.Orientation = 2                                   # Landscape
+$pm.PaperSize   = 'ISO_A3_(297.00_x_420.00_MM)'       # exact name from AvailablePaperSizes()
+$pm.SetSheets([string[]]@('Model'))
+$pm.SetPrintRange(5, '', $true, $x1, $y1, $x2, $y2)   # 5 = SpecifyWindow, window in model units
+$pm.PrintOut(1, 'C:\full\path\sheet-01.pdf')
+```
+
+- `SetClosestValidPaperSize(420,297)` resolves to the **full-bleed** variant (`ISO_full_bleed_A3_(...)`); assign `PaperSize` by exact name when you want the trimmed sheet.
+- `Orientation` rotates the *named* paper: the portrait-dims name plus `2` produced `MediaBox [0 0 1191 842]` (A3 landscape). Passing an already-landscape name risks a second rotation - read `MediaBox` back to confirm.
+- `PrintOut` is silent on success. Verify by file size and `MediaBox`; rasterize with `pypdfium2` + Pillow (`render(scale).to_pil().save()`) when the drawn content itself must be checked.
+
+Runnable end to end: `scripts/com-plot-frames.ps1` (detect frames, one PDF per frame) and `scripts/verify-plot.py` (page size, ink-to-edge distance, colored-pixel fraction).
+**Monochrome output needs two settings, not one.** `StyleTable = 'monochrome.ctb'` alone does nothing - the table is applied only when `UseAssignedPrintStyle = $true` (the name reads backwards: "assigned" = use the assigned plot style table). With `$false` the assignment is silently dropped and `StyleTable` reads back empty. Measured on one sheet: unstyled 4.36% colored pixels, `monochrome.ctb` + assigned `$true` -> 0.026% (anti-aliasing only), `Grayscale.ctb` + assigned `$false` -> 4.36%, unchanged.
+
+`GetAvailablePrintStyleTables([ref]$arr)` raises `DISP_E_BADCALLEE` (0x80020010) - enumerate the folder instead: `install_dir\Default Files\Print Styles\` holds `monochrome.ctb`, `Grayscale.ctb`, `default.ctb`, `Fill Patterns.ctb`, `Screening 25/50/75/100%.ctb`.
+
+**Margins are paper-dependent and non-zero by default.** With no paper selected `GetPrintMargins` reads `0 0 0 0`, but selecting `ISO_A4_(210.00_x_297.00_MM)` gives `20/20/7.5/7.5` (top/bottom/left/right). `SetPrintMargins(0,0,0,0)` plus `PrintOnCenter=$false` puts ink flush to the paper edge - confirm by measuring the ink bounding box of a rasterized page, not by reading the property back.
+
+`$e.Color` returns an `IColor` **object**, not an int - `[int]$e.Color` throws an argument-conversion error. Members: `GetColorIndex GetNamedColor GetRGB IsColorByIndex IsNamedColor SetByColor SetColorByIndex SetNamedColor SetRGBColor`. There is no `ColorMethod` or `PaletteIndex` property.
+
+Second, independent path: `$doc.GetDocumentExporter().ExportToPdf(path, sheetsArray, pageLen, pageW, [ref]$ok)` and `ExportToPdf2(path, settings)` with `CreateExportSettings()`; `IExportSettings` carries its own `PrintStyleTable` and `SetPrintMargins`. Prefer it when you only want a PDF and must not disturb the session's printer state.
 ## Introspect instead of guessing
 
 `Get-Member` on a `__ComObject` returns the real signatures, which beats the CHM docs whenever they disagree:
@@ -212,6 +304,8 @@ Two PowerShell gotchas that cost time:
 - Cast `[string]$m.Definition` before matching. Concatenating `$m.MemberType` into a string throws `Cannot convert value "::" to type PSMemberTypes`.
 - **Filter properties on `$m.MemberType -eq 'Property'`, not on `(`.** A COM property definition contains parentheses - `string Handle () {get}`, `double Radius () {get} {set}` - so an `(` filter silently drops every property and the loop prints nothing.
 - **Never anchor a name filter while discovering an API.** Filtering on `^(Set|Get)(ColumnWidth|RowHeight|TextHeight|Text)$` reported no `SetColumnWidthAt`, and "per-column widths are unreachable over COM" was written down as fact. It is reachable: `SetColumnWidthAt(int, double)` is right there; the `$` anchor dropped it. Filter on a bare substring (`Column|Row|Cell`) or dump the whole list. **Absence from a filtered list is unknown, not absent.**
+- **Bool methods like `IsActive` and `IsDirty` surface as `ParameterizedProperty`, not `Property`.** `$s.IsActive` yields the definition string `"bool IsActive ()"`, which is **always truthy**, so `if ($s.IsActive)` is true for every sheet and "both Model and Layout1 are active" gets reported. Call it: `$s.IsActive()` -> `True`/`False`. Same for `IDocument.IsDirty`.
+- **`IModel` is not a viewport owner.** `GetActiveViewport` and `GetBoundingBox` both raise `MethodNotFound` on it. Viewports come from `ISheet.GetActiveViewport()` / `ISheet.GetViewports()`; the sheet-level props are `Width`, `Height`, `ViewHeight`, `StandardScale`, `CustomScale`, `DisplayLocked`, `IsOn`, `ShadePrintStyle`, and `Center` reads back empty - use `GetCenter()` / `GetViewCenter()`.
 
 ## Worked example
 
