@@ -282,7 +282,11 @@ $pm.PrintOut(1, 'C:\full\path\sheet-01.pdf')
 - `PrintOut` is silent on success. Verify by file size and `MediaBox`; rasterize with `pypdfium2` + Pillow (`render(scale).to_pil().save()`) when the drawn content itself must be checked.
 
 Runnable end to end: `scripts/com-plot-frames.ps1` (detect frames, one PDF per frame) and `scripts/verify-plot.py` (page size, ink-to-edge distance, colored-pixel fraction).
-**Monochrome output needs two settings, not one.** `StyleTable = 'monochrome.ctb'` alone does nothing - the table is applied only when `UseAssignedPrintStyle = $true` (the name reads backwards: "assigned" = use the assigned plot style table). With `$false` the assignment is silently dropped and `StyleTable` reads back empty. Measured on one sheet: unstyled 4.36% colored pixels, `monochrome.ctb` + assigned `$true` -> 0.026% (anti-aliasing only), `Grayscale.ctb` + assigned `$false` -> 4.36%, unchanged.
+**Monochrome output needs three settings, not two.** `StyleTable = 'monochrome.ctb'` alone does nothing - the table is applied only when `UseAssignedPrintStyle = $true` (the name reads backwards: "assigned" = use the assigned plot style table). With `$false` the assignment is silently dropped and `StyleTable` reads back empty. Measured on one sheet: unstyled 4.36% colored pixels, `monochrome.ctb` + assigned `$true` -> 0.026% (anti-aliasing only), `Grayscale.ctb` + assigned `$false` -> 4.36%, unchanged.
+
+**The third setting is `ViewDisplayStyle`, and it is the one that hides.** Default `0` = *as displayed*, which shades the sheet, so the PDF plotter emits `DeviceRGB` raster tiles; a plot style table maps pen colours and cannot touch rasterised pixels. Verified 2026-10-19 on 26.4.0.5067: `ViewStyle` 0 **with** `monochrome.ctb` applied still produced 566 non-grey colour operators, `ViewStyle` 3 (wireframe + hidden lines) produced 2, the near-black logo pair. `3` also draws hidden lines, so use `1` if hidden lines are unwanted. Shaded output is unmistakable once you look: ~1 `m ... l` pair per page and a pile of `/Subtype /Image` tiles.
+
+**Do not verify plots by regexing PDF bytes.** Scanning the raw file for `rg` / `m` / `l` matches bytes inside embedded image streams, which is how a rasterised sheet passed a vector-content check. Decompress content streams (`FlateDecode`) before counting, or render and measure with `scripts/verify-plot.py`.
 
 `GetAvailablePrintStyleTables([ref]$arr)` raises `DISP_E_BADCALLEE` (0x80020010) - enumerate the folder instead: `install_dir\Default Files\Print Styles\` holds `monochrome.ctb`, `Grayscale.ctb`, `default.ctb`, `Fill Patterns.ctb`, `Screening 25/50/75/100%.ctb`.
 
@@ -291,6 +295,26 @@ Runnable end to end: `scripts/com-plot-frames.ps1` (detect frames, one PDF per f
 `$e.Color` returns an `IColor` **object**, not an int - `[int]$e.Color` throws an argument-conversion error. Members: `GetColorIndex GetNamedColor GetRGB IsColorByIndex IsNamedColor SetByColor SetColorByIndex SetNamedColor SetRGBColor`. There is no `ColorMethod` or `PaletteIndex` property.
 
 Second, independent path: `$doc.GetDocumentExporter().ExportToPdf(path, sheetsArray, pageLen, pageW, [ref]$ok)` and `ExportToPdf2(path, settings)` with `CreateExportSettings()`; `IExportSettings` carries its own `PrintStyleTable` and `SetPrintMargins`. Prefer it when you only want a PDF and must not disturb the session's printer state.
+
+### Multi-document batches
+
+`IPrintManager` plots the **active** document and nothing else, and there is no working activation call: `IDocument.GetModel().Activate()` returns without error and does not change `$app.GetActiveDocument()`. Opening is the only thing that raises a document, so the loop is close-others-then-open, with an assertion before every `PrintOut`:
+
+```powershell
+foreach ($name in 'B1.dwg','B2.dwg') {
+  $cur = $app.GetActiveDocument(); $curPath = $cur.GetPathName()
+  if ($curPath -notlike ('*\' + $name)) {
+    if ($curPath -like (Join-Path $stage '*')) { $cur.CloseDocument($false) }   # our copy: discard is fine
+    else { throw ('refusing to close user document ' + $curPath) }              # CloseDocument($false) discards silently
+  }
+  if ($app.GetActiveDocument().GetPathName() -notlike ('*\' + $name)) { throw ('target is not active: ' + $name) }
+  # ... plot frames ...
+}
+```
+
+Re-opening a staged copy after a `CloseDocument($false)` is free *only* because the script never saves the DWG - the trick depends on it.
+
+`SelectByWindow` / `GetSelectedObjectCount(0)` read a **non-active** document, so inventory (extents + every text's `Contents`) can be dumped from all DWGs up front and the plan re-derived offline without COM: 3,145 entities in ~5 s, one round trip per document. Save and restore the print state around a batch - `Printer`, `PaperSize`, `Orientation`, `ScaleToFit`, `PrintOnCenter`, `ViewDisplayStyle`, `StyleTable`, `UseAssignedPrintStyle`, `GetPrintMargins`, `GetPrintRange` - the settings are application-wide and survive document switches.
 ## Introspect instead of guessing
 
 `Get-Member` on a `__ComObject` returns the real signatures, which beats the CHM docs whenever they disagree:

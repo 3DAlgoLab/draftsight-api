@@ -115,7 +115,7 @@ the COM call is safe, or the other way round.
 |---|---|
 | `dsDocumentExporter.ExportToEmf` | returned empty, then `jsServer connection Failed`, then DraftSight restarted |
 | `dsDocument.SaveAs` | obsolete, superseded by `SaveAs2`; returns `GenericError` for every option |
-| `dsApplication.GetDocuments` | the only chain that preceded an unexplained crash; prefer `GetActiveDocument` |
+| `dsApplication.GetDocuments` | HTTP only: the only chain that preceded an unexplained crash; prefer `GetActiveDocument`. Over COM it is fine - used across 4 open documents on 26.4.0.5067 with no fault |
 
 ## Drawing discipline
 
@@ -128,6 +128,7 @@ the COM call is safe, or the other way round.
 - **`SelectByPolygon` needs flat x,y,z triples.** x,y pairs return `False` and select nothing - a silent no-op that hides leftovers.
 - **A filtered `Get-Member` list is not proof of absence.** Anchor the name regex and you will miss methods that exist. See `references/com-api.md`.
 - Erase any probe entity in the same script that created it. Entities have no `Delete()`; use `ISketchManager.SetObjectErased($e, $true)`.
+- **PowerShell written from bash: `param()` must be the first statement** - a leading comment line makes the whole block a silent no-op and `-Switch` arguments then do nothing. `$` inside a double-quoted bash string is eaten, and backtick escapes vanish through the two layers, so write the script to a file and run it with `-File` instead of `-Command`.
 - **Grep the working tree for earlier `*.ps1` before probing the API from scratch.** A previous session's scratch script is verified prior art. Re-deriving its signatures is how confident wrong claims get written into this skill.
 
 ## Plotting sheets to PDF
@@ -145,10 +146,38 @@ Runnable: `scripts/com-plot-frames.ps1` (find sheet frames, plot one PDF per fra
   select, and `ISelectionManager` has no `SelectByLayer` at all. Match closed polylines
   (`dsPolyLineType` = 27) whose bounding box has an ISO A-series aspect ratio (~1.414). Borders come
   as nested triples (outer / middle / inner), so collapse coincident corners or every frame counts 3x.
-- **Monochrome needs two settings, not one:** `StyleTable = 'monochrome.ctb'` *and*
-  `UseAssignedPrintStyle = $true`. With `$false` the table is dropped silently and reads back empty.
+- **Monochrome needs three settings, not one:** `StyleTable = 'monochrome.ctb'`,
+  `UseAssignedPrintStyle = $true`, and `ViewDisplayStyle = 3` (wireframe with hidden lines). The
+  default `ViewDisplayStyle = 0` is "as displayed", which *shades* the sheet: the PDF becomes
+  `DeviceRGB` raster tiles and no plot style table can touch rasterised pixels, so colour survives
+  `monochrome.ctb` completely. Measured 2026-10-19 on one sheet: `ViewStyle` 0 with the CTB applied
+  -> 566 chromatic colour operators; `ViewStyle` 3 -> 2, the near-black title-block logo pair.
   `GetAvailablePrintStyleTables` raises `DISP_E_BADCALLEE`; the tables are plain files in
   `install_dir\Default Files\Print Styles\`.
+- **Verify plotted PDFs with `scripts/verify-plot.py`, never by regexing the raw file.** Counting
+  `rg` / `m` / `l` operators across the whole file also matches bytes *inside embedded image streams*:
+  it reported a fully rasterised sheet as healthy vector art and coloured sheets got committed. Vector
+  truth = decompress the `FlateDecode` content streams and count `m x y l` pairs (hundreds to
+  thousands on a real sheet, ~1 plus many `/Subtype /Image` tiles on a shaded one). Producer metadata
+  reads `ODA PDF Export v25.5.0.47139`, which is how you prove which PDFs a plot run produced.
+- **A sheet border can be drawn with `LINE` entities instead of a closed polyline**, and then polyline
+  matching silently loses the sheet (F3: 6 of 7 sheets found; 1,080 entities + 89 texts sat outside
+  every frame; the missing border was 12 lines at 0,0 - 1266,897, same triple offset 1.5 / 3). Gate
+  every run on entities and texts *outside* all frames. A cluster carrying `UNIT/mm`, `TITLE`,
+  `REVISON`, `DWG. NO.`, `SIZE`, `DWG'D BY` is a real sheet; a lone `No. / PART NAME / Q'TY / MAT'L`
+  table is a borderless fragment - report it, do not plot it.
+- **Plot one document per run.** `IDocument` / `IModel` have no working `Activate()` over COM (it
+  returns successfully and does nothing) and `IPrintManager` always prints the *active* document.
+  Opening a document is what raises it, so close the others and `OpenDocument2` the target, then assert
+  `$app.GetActiveDocument().GetPathName()` matches before each `PrintOut` and abort if it does not.
+  Never `CloseDocument($false)` a document the user opened - it discards unsaved work without a prompt.
+  `SelectByWindow` does read non-active documents, so dump every DWG's extents and texts first, plot after.
+- **Pick paper from the title block, not from habit.** Sheet frames are integer multiples of one ISO
+  size (KL-61: every frame 2x, 3x or 5x A3, and the block states `SIZE A3`), so one paper plus
+  `ScaleToFit` gives uniform pages *and* honest relative scale between small and large frames.
+- **Name sheets from the drawing, then expect renames.** Use `DWG. NO.` plus the nearest `KL61...` text
+  to its right; one sheet spanning two frames repeats the number (`-015` twice -> `-015-a/-b` by x
+  order). If files get renamed by hand afterwards, rebuild the manifest from what is on disk.
 - **Margins are paper-dependent and non-zero by default** (A4: 20/20/7.5/7.5 mm). `SetPrintMargins(0,0,0,0)`
   with `PrintOnCenter = $false` puts ink flush to the paper edge.
 - `PrintOut(Copies, FileName)` with `Printer = 'PDF'` needs a full path, overwrites silently, and

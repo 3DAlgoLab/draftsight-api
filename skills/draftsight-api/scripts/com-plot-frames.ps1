@@ -13,6 +13,14 @@
   'PDF' file plotter, so no printer has to be installed. Print settings are saved and restored unless
   -LeaveAsDefault is given.
 
+  Monochrome needs THREE settings: StyleTable, UseAssignedPrintStyle, and ViewDisplayStyle = 3. The
+  default ViewDisplayStyle = 0 plots "as displayed", shading the sheet into DeviceRGB raster tiles, so
+  the plot style table has nothing to act on and colour survives - see -ViewStyle.
+
+  Sheets whose border is drawn with LINE entities instead of a closed polyline are invisible to the
+  geometric matcher: step 2b reports every entity outside all frames, and -AddLineFrames promotes an
+  ISO-aspect unframed mass to a sheet. Only the active document can be plotted - open one DWG per run.
+
   Verified on DraftSight 26.4.0.5067: a 5,020-entity model space holding 13 sheet frames produced 13
   single-page PDFs, A4 landscape, zero margins, monochrome.
 .EXAMPLE
@@ -28,6 +36,8 @@ param(
   [double]$Margins = 0.0,
   [string]$StyleTable = 'monochrome.ctb',
   [switch]$Color,                                    # skip the plot style table
+  [int]$ViewStyle = 3,                               # 3 = wireframe + hidden lines; 0 = as displayed -> shaded RASTER
+  [switch]$AddLineFrames,                            # promote an ISO-aspect unframed entity mass to a sheet
   [int]$Orientation = 2,                             # 1 = Portrait, 2 = Landscape
   [string]$Sheet = 'Model',
   [double]$MinFrameWidth = 400,
@@ -95,10 +105,34 @@ foreach ($f in ($cand | Sort-Object area -Descending)) {
 "frames: $($cand.Count) candidate polylines -> $($frames.Count) distinct sheets"
 if ($frames.Count -eq 0) { 'nothing to plot - widen -MinFrameWidth or check the ratio band'; exit 1 }
 
+# ---- 2b. completeness gate: entities outside every frame are a sheet you are about to lose ----
+$outside = @()
+foreach ($e in $ents) {
+  $cx = ($e.x1 + $e.x2) / 2; $cy = ($e.y1 + $e.y2) / 2
+  $ins = $false
+  foreach ($f in $frames) { if ($cx -ge $f.x1 -and $cx -le $f.x2 -and $cy -ge $f.y1 -and $cy -le $f.y2) { $ins = $true; break } }
+  if (-not $ins) { $outside += $e }
+}
+if ($outside.Count -gt 0) {
+  $ox1 = ($outside | Measure-Object -Property x1 -Minimum).Minimum
+  $oy1 = ($outside | Measure-Object -Property y1 -Minimum).Minimum
+  $ox2 = ($outside | Measure-Object -Property x2 -Maximum).Maximum
+  $oy2 = ($outside | Measure-Object -Property y2 -Maximum).Maximum
+  $ow = $ox2 - $ox1; $oh = $oy2 - $oy1
+  $asp = [Math]::Max($ow, $oh) / [Math]::Max(1e-9, [Math]::Min($ow, $oh))
+  ('gate: {0} of {1} entities outside every frame, bbox ({2}, {3}) - ({4}, {5}), aspect {6}' -f $outside.Count, $ents.Count, [Math]::Round($ox1, 0), [Math]::Round($oy1, 0), [Math]::Round($ox2, 0), [Math]::Round($oy2, 0), [Math]::Round($asp, 3))
+  if ($AddLineFrames -and $asp -gt 1.30 -and $asp -lt 1.55) {
+    $frames += [pscustomobject]@{ handle = 'lines'; x1 = $ox1; y1 = $oy1; x2 = $ox2; y2 = $oy2; w = $ow; h = $oh; area = $ow * $oh }
+    'gate: outside mass has an ISO aspect ratio, added as a sheet (border drawn with LINE entities, no closed polyline)'
+  } else {
+    'gate: CHECK THIS - an unframed title block or BOM cluster is a sheet whose border is not a closed polyline'
+  }
+}
+
 # ---- 3. save print state ----
 $sPrinter = $pm.Printer; $sPaper = $pm.PaperSize; $sFit = $pm.ScaleToFit
 $sOrient = $pm.Orientation; $sCenter = $pm.PrintOnCenter
-$sStyle = $pm.StyleTable; $sAssigned = $pm.UseAssignedPrintStyle
+$sStyle = $pm.StyleTable; $sAssigned = $pm.UseAssignedPrintStyle; $sView = $pm.ViewDisplayStyle
 $st = 0.0; $sb2 = 0.0; $sl = 0.0; $sr2 = 0.0
 $pm.GetPrintMargins([ref]$st, [ref]$sb2, [ref]$sl, [ref]$sr2)
 $pr = 0; $pnv = ''; $pwin = $false; $px1 = 0.0; $py1 = 0.0; $px2 = 0.0; $py2 = 0.0
@@ -116,10 +150,11 @@ if (-not $Color) {
   $pm.StyleTable = $StyleTable
   $pm.UseAssignedPrintStyle = $true      # the table is ignored unless this is $true
 }
+$pm.ViewDisplayStyle = $ViewStyle        # 0 = as displayed -> shaded raster, the CTB cannot touch it
 try { $pm.SetSheets([string[]]@($Sheet)) } catch { "SetSheets err: $(Msg $_)" }
 $t = 0.0; $bo = 0.0; $le = 0.0; $ri = 0.0
 $pm.GetPrintMargins([ref]$t, [ref]$bo, [ref]$le, [ref]$ri)
-"plotting: paper=$($pm.PaperSize) margins=$t/$bo/$le/$ri style=[$($pm.StyleTable)] assigned=$($pm.UseAssignedPrintStyle) fit=$($pm.ScaleToFit) orient=$($pm.Orientation)"
+"plotting: paper=$($pm.PaperSize) margins=$t/$bo/$le/$ri style=[$($pm.StyleTable)] assigned=$($pm.UseAssignedPrintStyle) fit=$($pm.ScaleToFit) orient=$($pm.Orientation) view=$($pm.ViewDisplayStyle)"
 
 $i = 0
 foreach ($f in $frames) {
@@ -145,8 +180,8 @@ if ($LeaveAsDefault) {
 } else {
   $pm.Printer = $sPrinter; $pm.PaperSize = $sPaper; $pm.ScaleToFit = $sFit
   $pm.Orientation = $sOrient; $pm.PrintOnCenter = $sCenter
-  $pm.StyleTable = $sStyle; $pm.UseAssignedPrintStyle = $sAssigned
+  $pm.StyleTable = $sStyle; $pm.UseAssignedPrintStyle = $sAssigned; $pm.ViewDisplayStyle = $sView
   try { $pm.SetPrintMargins($st, $sb2, $sl, $sr2) } catch {}
   try { $pm.SetPrintRange($pr, $pnv, $pwin, $px1, $py1, $px2, $py2) } catch {}
-  "restored: printer=$($pm.Printer) paper=$($pm.PaperSize) style=[$($pm.StyleTable)]"
+  "restored: printer=$($pm.Printer) paper=$($pm.PaperSize) style=[$($pm.StyleTable)] view=$($pm.ViewDisplayStyle)"
 }
