@@ -1,79 +1,132 @@
-# Offline signature oracle for DraftSight's shipped interop assembly.
-#
-# DraftSight ships a tlbimp wrapper over its own type library. Reflecting over it answers "what is the
-# real signature of this call?" in about two seconds, with DraftSight closed and no document touched,
-# which beats asking the running app through IDispatch: there, out-parameters are invisible, every
-# array parameter is typed `Object`, and the member list contains things the type library does not
-# declare. Verified 2026-10-24 against DraftSight 26.4.0.5067 (assembly 26.4.0.43, 723 types).
-#
-#   .\com-signature-oracle.ps1                                                # hot interfaces
-#   .\com-signature-oracle.ps1 -Search Hatch                                  # who declares what
-#   .\com-signature-oracle.ps1 -Types ISketchManager -Method GetEntities
-#   .\com-signature-oracle.ps1 -Search EntityType -Enums                      # is there a published enum?
+#Requires -Version 5
+<#
+.SYNOPSIS
+  Read DraftSight's real COM contract from the shipped type library, offline.
+.DESCRIPTION
+  The live COM object reached from PowerShell is a late-bound __ComObject, so Get-Member on it shows only
+  the IDispatch surface and cannot see overloads, out/ref parameters, or parameter names. This script loads
+  DraftSight's own interop assembly with Add-Type and reflects the declared signatures instead: no DraftSight
+  process, no document, no writes, and it answers in seconds which member names do not exist at all. Use it
+  BEFORE probing the live app, and treat its output as the contract.
+
+  A machine-readable type library beats the vendor help pages for signatures - the help is generated from
+  this same typelib and is ~76 MB of HTML. It is also the only way to enumerate enums and read their numeric
+  values, which the help pages do not print.
+.PARAMETER Interop
+  Path to DraftSight's interop assembly, as shipped in APISDK\tlb\ under the install root.
+.PARAMETER Types
+  Interface or type names to dump in full. Comma-separated works: powershell -File passes "-Types A,B" as one
+  argument, so the script splits commas itself rather than forcing "-Types A -Types B".
+.PARAMETER Method
+  Method name pattern to match across all interfaces (default: the supported entity enumerator).
+.PARAMETER Search
+  Substring for a name search that prints who declares each hit - use this to settle whether a member exists.
+  With -Enums it also lists matching enums; the search branch used to exit before that, reporting "no enum".
+.PARAMETER Enums
+  With -Search or alone, list the enums whose names match, to prove whether a published enum exists.
+.PARAMETER Values
+  Print every enum member with its numeric value instead of a name preview. Docs give names; only the
+  typelib gives the numbers, which is what you need to decode ids read back out of a drawing.
+.EXAMPLE
+  powershell -File com-signature-oracle.ps1 -Search ObjectName -Enums
+  Find who declares anything and whether an ObjectType-style enum exists.
+.EXAMPLE
+  powershell -File com-signature-oracle.ps1 -Types ISketchManager -Method InsertHatch -Values
+#>
+[CmdletBinding()]
 param(
-  [string] $Interop = 'C:\Program Files\Dassault Systemes\DraftSight\APISDK\tlb\DraftSight.Interop.dsAutomation.dll',
-  [string[]] $Types = @('IApplication','IDocument','IModel','ISketchManager','ILayerManager','IDimensionStyleManager','ISelectionManager'),
-  [string[]] $Method = @(),
-  [string] $Search = '',
-  [switch] $Enums
+  [string]$Interop = 'C:\Program Files\Dassault Systemes\DraftSight\APISDK\tlb\DraftSight.Interop.dsAutomation.dll',
+  [string[]]$Types  = @(),
+  [string[]]$Method = @('GetEntities'),
+  [string]$Search = '',
+  [switch]$Enums,
+  [switch]$Values
 )
 $ErrorActionPreference = 'Stop'
-# powershell -File hands "-Types A,B" over as a single string, so split commas here rather than
-# requiring "-Types A -Types B" at the prompt.
+# powershell -File hands "-Types A,B" over as a single string; split commas here.
 $Types  = $Types  | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
 $Method = $Method | ForEach-Object { $_ -split ',' } | Where-Object { $_ }
-if (-not (Test-Path $Interop)) { throw ('interop assembly not found: ' + $Interop + ' - check the DraftSight install path') }
-$asm = [System.Reflection.Assembly]::LoadFile($Interop)
+if (-not (Test-Path $Interop)) { throw "interop assembly not found: $Interop" }
+Add-Type -Path $Interop
+$asm = [System.AppDomain]::CurrentDomain.GetAssemblies() |
+  Where-Object { $_.GetName().Name -eq 'DraftSight.Interop.dsAutomation' } | Select-Object -First 1
+$all = $asm.GetTypes()
+
 'ASSEMBLY: ' + $asm.FullName
-'allTypes=' + $asm.GetTypes().Count + '  interfaces=' + @($asm.GetTypes() | Where-Object { $_.IsInterface }).Count + '  enums=' + @($asm.GetTypes() | Where-Object { $_.IsEnum }).Count
+'allTypes=' + $all.Count + '  interfaces=' + (@($all | Where-Object { $_.IsInterface }).Count) + '  enums=' + (@($all | Where-Object { $_.IsEnum }).Count)
+
+function Format-Param([System.Reflection.ParameterInfo]$p) {
+  $k = ''
+  if ($p.IsOut -and $p.ParameterType.Name -like '*&') { $k = 'out ' } elseif ($p.ParameterType.Name -like '*&') { $k = 'ref ' }
+  elseif (-not $p.IsIn) { $k = '[opt] ' }
+  $t = $p.ParameterType.Name -replace '&$',''
+  return $k + $t + ' ' + $p.Name
+}
+
+function Show-Enum([type]$e) {
+  $names = [System.Enum]::GetNames($e)
+  if ($Values) {
+    '  ' + $e.Name + ' (' + $names.Count + ' values)'
+    foreach ($n in $names) { '    ' + $n + ' = ' + [int64][System.Enum]::Parse($e, $n) }
+  } else {
+    '  ' + $e.Name + ' (' + $names.Count + '): ' + (($names | Select-Object -First 24) -join ', ')
+  }
+}
 
 if ($Search) {
-  '--- types matching "' + $Search + '"'
-  foreach ($t in ($asm.GetTypes() | Where-Object { $_.Name -match $Search } | Sort-Object Name | Select-Object -First 25)) {
-    $k = if ($t.IsEnum) { 'enum' } elseif ($t.IsInterface) { 'interface' } elseif ($t.IsValueType) { 'struct' } else { 'class' }
-    '  ' + $k + ' ' + $t.Name
-  }
+  '--- types containing "' + $Search + '"'
+  foreach ($t in ($all | Where-Object { $_.Name -match $Search } | Sort-Object Name | Select-Object -First 30)) { '  ' + $t.FullName }
   '--- members matching "' + $Search + '"'
-  foreach ($t in ($asm.GetTypes() | Where-Object { $_.IsInterface } | Sort-Object Name)) {
-    foreach ($m in ($t.GetMembers() | Where-Object { $_.Name -match $Search })) {
+  foreach ($t in ($all | Where-Object { $_.IsInterface } | Sort-Object Name)) {
+    foreach ($m in $t.GetMembers([System.Reflection.BindingFlags]'Public,Instance,Static')) {
+      if ($m.Name -notmatch $Search) { continue }
       $ret = ''
-      if ($m -is [System.Reflection.MethodInfo]) { $ret = ' -> ' + $m.ReturnType.Name }
+      if ($m.GetType().Name -eq 'MethodInfo') {
+        $mi = [System.Reflection.MethodInfo]$m
+        $ps = @($mi.GetParameters() | ForEach-Object { Format-Param $_ })
+        $ret = '(' + ($ps -join ', ') + ') -> ' + $mi.ReturnType.Name
+      }
       '  ' + $t.Name + '.' + $m.Name + $ret
     }
+  }
+  if ($Enums) {
+    '--- enums matching "' + $Search + '"'
+    foreach ($e in ($all | Where-Object { $_.IsEnum -and $_.Name -match $Search } | Sort-Object Name | Select-Object -First 6)) { Show-Enum $e }
   }
   exit 0
 }
 
-function Show-Sig($m) {
-  if ($m -is [System.Reflection.PropertyInfo]) {
-    '  prop  ' + $m.PropertyType.Name + ' ' + $m.Name + $(if ($m.CanRead) { ' {get' } else { ' {' }) + $(if ($m.CanWrite) { '; set' } else { '' }) + ' }'
-    return
+foreach ($tn in $Types) {
+  $t = $all | Where-Object { $_.Name -eq $tn } | Select-Object -First 1
+  if (-not $t) { 'MISSING TYPE: ' + $tn; continue }
+  '### ' + $t.FullName + '  (' + $t.GetMembers().Count + ' members)'
+  foreach ($m in ($t.GetMembers() | Sort-Object Name)) {
+    if ($m.GetType().Name -ne 'MethodInfo') { continue }
+    $mi = [System.Reflection.MethodInfo]$m
+    $ps = @($mi.GetParameters() | ForEach-Object { Format-Param $_ })
+    '  ' + $mi.ReturnType.Name + ' ' + $mi.Name + '(' + ($ps -join ', ') + ')'
   }
-  $ps = ($m.GetParameters() | ForEach-Object {
-    $kind = 'in'
-    if ($_.IsOut) { $kind = 'out' }
-    elseif ($_.ParameterType.IsByRef) { $kind = 'ref' }
-    $tt = $_.ParameterType
-    if ($tt.IsByRef) { $tt = $tt.GetElementType() }
-    $kind + ' ' + $tt.Name + ' ' + $_.Name
-  }) -join ', '
-  '  ' + $m.ReturnType.Name + ' ' + $m.Name + '(' + $ps + ')'
 }
 
-foreach ($tn in $Types) {
-  $t = $asm.GetTypes() | Where-Object { $_.Name -eq $tn -and $_.IsInterface } | Select-Object -First 1
-  if (-not $t) { 'MISSING INTERFACE: ' + $tn + '  (names come from the type library - find it with -Search first)'; continue }
-  $members = $t.GetMembers() | Where-Object { $_ -is [System.Reflection.MethodInfo] -or $_ -is [System.Reflection.PropertyInfo] }
-  if ($Method.Count -gt 0) { $members = $members | Where-Object { $Method -contains $_.Name } }
-  '### ' + $t.FullName + '  (' + @($t.GetMembers()).Count + ' members)'
-  foreach ($m in ($members | Sort-Object Name)) { Show-Sig $m }
+$seen = @{}
+foreach ($tn in ($all | Where-Object { $_.IsInterface } | Sort-Object Name)) {
+  foreach ($m in $tn.GetMembers()) {
+    foreach ($pat in $Method) {
+      if ($m.Name -notmatch $pat) { continue }
+      if ($seen.ContainsKey($tn.Name + '.' + $m.Name + $pat)) { continue }
+      $seen[$tn.Name + '.' + $m.Name + $pat] = $true
+      $mi = [System.Reflection.MethodInfo]$m
+      $ps = @($mi.GetParameters() | ForEach-Object { Format-Param $_ })
+      '[' + $pat + '] ' + $tn.Name + '.' + $mi.Name + ' -> ' + $mi.ReturnType.Name + ' ( ' + ($ps -join ', ') + ' )'
+    }
+  }
 }
 
 if ($Enums) {
-  '### enums'
-  foreach ($e in ($asm.GetTypes() | Where-Object { $_.IsEnum } | Sort-Object Name | Select-Object -First 12)) {
-    $names = [System.Enum]::GetNames($e)
-    '  ' + $e.Name + ' (' + $names.Count + '): ' + (($names | Select-Object -First 8) -join ', ')
-  }
+  $pat = if ($Search) { $Search } else { '.*' }
+  '--- enums matching "' + $pat + '"'
+  $hits = @($all | Where-Object { $_.IsEnum -and $_.Name -match $pat } | Sort-Object Name | Select-Object -First 6)
+  if ($hits.Count -eq 0) { '  no enum with that name is published' }
+  foreach ($e in $hits) { Show-Enum $e }
 }
-'DONE'
+'_DONE'

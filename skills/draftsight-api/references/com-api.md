@@ -173,13 +173,24 @@ $dm.CreateDimensionStyle('X-DIM', $dm.GetDimensionStyle('ISO-25'), $res)
 ### Hatch - exactly one overload works
 
 ```powershell
-# a boundary is [count, then count flat x,y,z triples]; a multi-loop hatch passes one counts array, e.g. (6, 4)
+# a boundary is [count, then count flat x,y,z triples] - documented for exactly ONE loop per call.
+# PatternScale is documented as 0.25..2.0 in 0.25 steps (default 1); PatternAngle is radians, 0..2*pi.
 $sk.InsertHatchByBoundary([int[]]@(6), [double[]]@($x1,$y1,0, $x2,$y2,0, ...), 'ANSI31', 1.5, 0.0)
 ```
 
 `InsertHatchByEntities`, `InsertHatchByEntitiesEx` and `InsertHatchByInternalPoints` all return
 `null` over COM - no exception, nothing drawn - even though the JS API accepts them. Read the hatch
 back through `PatternName` / `PatternScale` / `Area` instead of trusting the call to have drawn.
+
+Three things the help settles that a first pass guessed at. `PatternScale` is bounded **0.25 to 2.0 in
+0.25 steps**, default 1, and is ignored for `UserDefined` patterns - those respace through
+`IHatchPattern::SetHatchOrSolidData`. `PatternAngle` is radians, 0 to 2*pi. And `BoundaryPointDblArray` is
+documented as "array of x-y coordinates" while the call that actually draws passes **x, y, z triples** -
+the help trails the implementation here, which is worth remembering about this reference in general.
+Whether a single call can hatch more than one loop is **undocumented and still untested** by me; the counts
+array is described in the singular, so treat `@(6, 4)` as an inference, not a recipe. A hatched region's
+loops are read back through `IHatch.GetBoundaryLoopsCount` / `IHatch.GetHatchBoundaryLoop` /
+`IHatchBoundaryLoop.GetPolyLineBoundaryLoopData`.
 
 ### Dimension annotation is style-level, not entity-level
 
@@ -286,12 +297,25 @@ the symbolic **`dsLnWt_035`**, where the late-bound path returns a bare `35`; ty
 `0` success?" guessing the trust table has to carry everywhere else. Runnable version with a per-layer
 breakdown and a type histogram: `scripts/com-entities-dump.ps1`.
 
-That run's histogram is a usable calibration because it was checked against a drawing whose contents
-were known when it was drawn: `21=47` lines (12 outline + 29 centre segments + 6 leader and rule
-lines), `24=3` texts, `55=4` rotated dimensions, `71=2` hatches - summing to exactly 56, and the
-per-layer split (12 / 2 / 29 / 4 / 9) matched the layers they were drawn onto. Since the type library
-publishes no `*EntityType` enum, treat those four ids as measured and calibrate any new one the same
-way: known drawing first, id afterwards.
+That run also needed its type ids decoded, and getting them decoded took two attempts: the first search
+asked the type library for a `*EntityType` enum, found none, and recorded "no enum is published". The enum
+is published - it is `dsObjectType_e`, 164 values - I had simply guessed the wrong name, which is what the
+help is for. The help gives the name and the type library gives the numbers, which the help never prints:
+
+```
+powershell -File scripts/com-signature-oracle.ps1 -Search dsObjectType_e -Enums -Values
+```
+
+| id | `dsObjectType_e` member | in that drawing |
+|---|---|---|
+| 21 | `dsLineType` | 47 (12 outline + 29 centre + 6 leader and rule lines) |
+| 24 | `dsSimpleNoteType` | 3 - `InsertNote` creates a *SimpleNote*, not a Text entity |
+| 55 | `dsRotatedDimensionType` | 4 |
+| 71 | `dsHatchType` | 2 |
+
+56 entities total, and the per-layer split (12 / 2 / 29 / 4 / 9) matched the layers they were drawn onto:
+numbers from the type library and contents from a known drawing, corroborating each other from two
+independent sources. When a new id appears, do the same - known drawing first, id afterwards.
 
 Five traps on this path, each one hit during the 2026-10-24 spike:
 
@@ -299,7 +323,7 @@ Five traps on this path, each one hit during the 2026-10-24 spike:
 - The interop's interface names are the coclass-flavoured ones: `Application`, `Document`, `Layer`, `Line`, `Hatch`, `SimpleNote`. **`IEntity` is not one of them** - a `using`-clean compile still fails with `'IEntity' does not exist`; ask the oracle with `-Search ObjectName` for the declaring interface.
 - Entity array elements arrive as `System.__ComObject`, so read a property either through a cast to the interface that declares it, or through `GetType().InvokeMember(name, BindingFlags.GetProperty, ...)`.
 - There is **no `*EntityType` enum** among the 723 types, so `EntityTypeLongArray` values have no published names: calibrate the ids you depend on against one drawing whose contents you already know.
-- The `SelectionFilter` parameter is an interface with **zero constructors**, so late binding cannot build one either. `null` is the only useful argument and only early binding can pass it; a real filter object is obtainable from `ISelectionManager.GetSelectionFilter()` - found by reading the type library on 2026-10-24, not yet exercised.
+- The `SelectionFilter` parameter is an interface with **zero constructors**, so late binding cannot build one either. `null` is the only useful argument and only early binding can pass it - and the help says so outright: *"Selection filter indicating which entities to get or a null value to accept all types of entities"*, with `LayerNamesStrArray` described as an array of layer-name strings. So `GetEntities(null, @('1-OUTLINE'), [ref]$ids, [ref]$ents)` is the documented call rather than a workaround. A real filter object is obtainable from `ISelectionManager.GetSelectionFilter()`.
 
 For creating objects the type library declares real out parameters -
 `CreateLayer(in String Name, out Layer Layer, out dsCreateObjectResult_e Result)` and

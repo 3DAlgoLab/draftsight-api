@@ -66,8 +66,14 @@ cd ~/.pi/agent/git/github.com/3DAlgoLab/draftsight-api
 bash skills/draftsight-api/scripts/decompile-chm.sh
 ```
 
-Requires DraftSight installed at `C:\Program Files\Dassault Systemes\DraftSight\`. The skill is
-useful without `docs/`; the reference just makes it able to look signatures up instead of guessing.
+Requires DraftSight installed at `C:\Program Files\Dassault Systemes\DraftSight\`; measured **6,457 pages
+and 76 MB in 2m05s**. The skill is useful without `docs/`, because signatures come from the 2 MB type
+library - but the help carries prose the type library cannot: what a parameter means, which `RunCommand`
+names exist, and the vendor's worked examples.
+
+Once it is there, **query it, never read it**: `scripts/docs-lookup.sh ISketchManager~GetEntities` resolves
+one page by filename and prints about 40 lines. Six such lookups settled more API questions in this release
+than any amount of page-reading would have, and 76 MB was never a reading target anyway.
 
 **`pi update --extensions` deletes `docs/`.** Pi cleans untracked files when it reconciles a git
 package, so the reference is removed on every update. Re-run the command above afterwards.
@@ -95,6 +101,7 @@ skills/draftsight-api/
 │   ├── verify-plot.py        check a plotted PDF: page size, ink margins, vector vs rasterised colour
 │   ├── ds-call.sh        handshake + one-call API client
 │   ├── decompile-chm.sh  regenerate docs/ from the installed DraftSight help
+│   ├── docs-lookup.sh    search that tree without reading it: one page by name, ~40 lines
 │   └── html2txt.sh       strip tags from help pages for grepping
 └── docs/                 NOT in git - ~6,500 decompiled help pages, ~76 MB
 ```

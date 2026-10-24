@@ -152,6 +152,13 @@ the COM call is safe, or the other way round.
   failing, not a COM enum quirk. Early binding takes them in one line and needs no new software:
   `Add-Type -Path $interop` then inline C#, and PowerShell 5.1 is .NET Framework so `GetActiveObject`
   still exists there. See `scripts/com-entities-dump.ps1`.
+- **Entity type ids are `dsObjectType_e` values - read the numbers off the type library.** The help lists
+  the names but never the numbers, and asking the type library for a `*EntityType` enum finds nothing
+  because the enum is called `dsObjectType_e`: `dsLineType = 21`, `dsSimpleNoteType = 24`,
+  `dsRotatedDimensionType = 55`, `dsHatchType = 71`. `InsertNote` creates a *SimpleNote*, so text you
+  inserted reports `24` rather than a Text entity. Same shape for weights: `LineWeight` is
+  `dsLineWeight_e`, where `dsLnWt_035` is `35` and the name carries the 0.35 mm ISO weight. Both come from
+  `com-signature-oracle.ps1 -Search dsObjectType_e -Enums -Values`.
 - **Size annotation against the part, then prove legibility.** 12 mm text on a 283 mm part reads on screen, 2.5 mm does not; export a `Zoom(2, ll, ur)` window over the dimension stack rather than trusting a whole-part export where every number is unreadable.
 - **Geometry you invented has to say so on the sheet.** A sketch that omits the outside diameter is not an invitation to pick one silently: draw it, dimension it as `(REF)`, and footnote `OUTSIDE DIA NOT DIMENSIONED IN SOURCE SKETCH - DRAWN %%c85 (REF)`.
 
@@ -228,9 +235,16 @@ For a visual check, `ExportToPng` gives clean chrome-free line art. It exports *
 A save is proven from disk, not from the save call: `OpenDocument($path, 0)` -> read the layers back -> `CloseDocument($path, $false)`. That confirms the version code actually wrote a file DraftSight can re-read. Never close a document the user opened.
 Screen capture is the fallback only: `PrintWindow` returns `False` on DraftSight's Qt5 GL surface; `CopyFromScreen` over `GetWindowRect` works but includes ribbon and palettes.
 
-## Official reference (bundled, 76 MB)
+## Official reference: a search target, never a reading target
 
-Decompiled from the DraftSight Help folder by `scripts/decompile-chm.sh`. Look things up instead of guessing.
+`scripts/decompile-chm.sh` decompiles the installed Help folder into `docs/` - measured **6,457 pages and
+76 MB in 2m05s**. It is gitignored and not shipped, so a fresh clone starts without it; generate it once
+per machine. Nothing in the tree is small enough to read directly: a page is only 1-4 KB, but there is no
+way to know which of 6,457 pages you want, so opening pages is mostly how context gets destroyed. Every
+access is a search, and `scripts/docs-lookup.sh` is that search: it resolves the page **by filename**
+first (decompiled CHM names embed `Interface~Member`, which makes name resolution cheap and exact), then
+prints stripped text of at most `-n` pages truncated to `-l` lines. One lookup costs about 40 lines, and
+six of them settled more API questions than reading anything would have.
 
 | Directory | Pages | Contents |
 |---|---|---|
@@ -243,9 +257,26 @@ Decompiled from the DraftSight Help folder by `scripts/decompile-chm.sh`. Look t
 | `docs/DSAPIHelp/`, `docs/NestingManager/` | 1 each | stubs, low value |
 
 ```
-grep -ril "ExportToPng" docs/draftsightapi/*.htm* | head
+scripts/docs-lookup.sh ISketchManager~GetEntities   # one API member, ~40 lines of context
+scripts/docs-lookup.sh -t ZoomFit                   # command reference scope only
+scripts/docs-lookup.sh -c ExportToPng -n 3          # full-text search, a few pages
+scripts/docs-lookup.sh dsLnWt -l 20                 # an enum family, shorter output
+grep -ril "ExportToPng" docs/draftsightapi/*.htm* | head                      # raw grep still works
 scripts/html2txt.sh docs/DraftSight/cmdref/command_reference_chart.htm | grep -i zoom
 ```
+
+**Look things up in this order**, cheapest first, stopping as soon as one answers:
+
+1. **the type library** - `scripts/com-signature-oracle.ps1`. Signatures with `in`/`out`/`ref`, whether a
+   member exists at all, enum names, and the enum *numbers* the help never prints. 2 MB, two seconds, and
+   the help pages are generated from this same type library.
+2. **the help pages** - `scripts/docs-lookup.sh`, for the prose a type library cannot carry: what a
+   parameter actually means, which `RunCommand` names are valid, the vendor's worked examples.
+3. **a live probe** - the only source for what no document states: how PowerShell marshals a given call,
+   and which members fail silently in this build.
+
+Steps 1 and 2 are offline and nearly free. The `IModel.GetEntities` retraction is exactly what skipping
+them costs.
 
 ## Command names are not AutoCAD's
 
