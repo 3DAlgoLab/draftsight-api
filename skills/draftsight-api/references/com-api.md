@@ -79,6 +79,15 @@ IDocumentExporter ExportToTiff / ExportToStl / ExportToSld / ExportToEmf
 IDocumentExporter ExportToPdf(string, Variant, double, double, bool)
 IApplication      GetPrintManager() -> IPrintManager  # plotting lives here, never on IDocument
 IDocument         GetPathName()                       # there is no GetName() over COM
+ILayerManager     CreateLayer(string, ILayer out, dsCreateObjectResult_e)   # out slot must be a live IDispatch
+IDimensionStyleManager CreateDimensionStyle(string, IDimensionStyle out, dsCreateObjectResult_e)
+ISketchManager    InsertHatchByBoundary(int[] loopCounts, double[] xyzLoops, string pattern, double scale, double angle)
+ISketchManager    InsertRotatedDimension(double[] ext1, double[] ext2, double[] dimLine, string textOverride, double rotationRad)
+ISketchManager    InsertSimpleNote(double x, double y, double z, double height, double angle, string text)
+IApplication      OpenDocument(string, dsDocumentOpenOption_e)   # 2 args; OpenDocument2 adds dsEncoding_e
+IApplication      CloseDocument(string, bool)
+IDimensionStyle   GetDimensionStyleTextOptions() / GetDimensionStyleArrowsOptions() / GetDimensionStyleLineOptions()
+IDimensionStyle   GetDimensionStyleFitOptions().SetDimensionScale(dsDimensionScale_e, double)
 IDocument         ScaleUnit                           # dsScaleUnit_e as int; 8 = Millimeters
 ISketchManager    GetBoundingBox(6 [ref] doubles)     # 1e20 -> -1e20 means an empty drawing
 IApplication      AbortRunningCommand()               # on the app, not on ISketchManager
@@ -128,6 +137,87 @@ Observed `GetObjectType` codes: **89 = table**, **24 = text**.
 **The `IMathPoint` factory is on `IApplication`, not on the document.** No `CreateMathPoint` exists on `IDocument`, `IModel`, or `ISketchManager` - grepping those three and concluding `SelectByWindow` is "unusable" is a wrong answer you can reach without ever asking the application object for `GetMathUtility`.
 
 `SelectByPolygon` needs **flat x,y,z triples**: `@(0,0,0, 80,0,0, 80,-25,0, 0,-25,0)`. Hand it flat x,y pairs and it returns `False` and selects nothing - a silent no-op, not an error.
+
+## Created objects: layers, styles, hatches, annotation
+
+**The out slot needs a live IDispatch.** `CreateLayer` and `CreateDimensionStyle` hand the new object
+back through an out slot typed as an interface, and PowerShell cannot fabricate that slot over
+`IDispatch`. All four natural call shapes fail, three of them confusingly:
+
+| Attempt | Failure |
+|---|---|
+| `CreateLayer('X', [ref]$null, [ref]$r)` | `NullReferenceException` |
+| `CreateLayer('X', [System.Reflection.Missing]::Value, ...)` | `ArgumentException` on the parameter count |
+| `[int]$o = 0; CreateLayer('X', [ref]$o, [ref]$o)` | cannot marshal `int` into a ref of interface type |
+| `InvokeMember('CreateLayer', ..., @('X', $null, 0))` | `DISP_E_TYPEMISMATCH` |
+
+Hand in an **existing object of the same interface** instead. It is an out parameter, so the value you
+pass is overwritten - it only has to marshall:
+
+```powershell
+$lm    = $doc.GetLayerManager()
+$proto = $lm.GetLayer('0')                  # any live ILayer
+$res   = 0
+$lm.CreateLayer('1-OUTLINE', $proto, $res)
+$lay   = $lm.GetLayer('1-OUTLINE')          # read-back is the evidence, not $res
+$lay.LineWeight = 35                        # 35 = 0.35 mm; per-entity .LineWeight works too
+$dm.CreateDimensionStyle('X-DIM', $dm.GetDimensionStyle('ISO-25'), $res)
+```
+
+`$res` came back `1` on one creation and `0` on another, both successful - trust `GetLayer()` /
+`GetDimensionStyle()`, never the result code. There is no way around `CreateLayer` either:
+`SetObjectLayer($e,'NEWNAME')` on a name that does not exist does not create it.
+
+### Hatch - exactly one overload works
+
+```powershell
+# a boundary is [count, then count flat x,y,z triples]; a multi-loop hatch passes one counts array, e.g. (6, 4)
+$sk.InsertHatchByBoundary([int[]]@(6), [double[]]@($x1,$y1,0, $x2,$y2,0, ...), 'ANSI31', 1.5, 0.0)
+```
+
+`InsertHatchByEntities`, `InsertHatchByEntitiesEx` and `InsertHatchByInternalPoints` all return
+`null` over COM - no exception, nothing drawn - even though the JS API accepts them. Read the hatch
+back through `PatternName` / `PatternScale` / `Area` instead of trusting the call to have drawn.
+
+### Dimension annotation is style-level, not entity-level
+
+Text height, arrow size and extension-line offsets come from the **style**, and option-group writes
+do persist - but only for the next read from a *fresh* style object:
+
+```powershell
+$ds = $doc.GetDimensionStyleManager().GetDimensionStyle('ISO-25')
+$ds.GetDimensionStyleFitOptions().SetDimensionScale(1, 1.0)   # normalise FIRST - see below
+$to = $ds.GetDimensionStyleTextOptions(); $to.Height = 12.0
+$doc.GetDimensionStyleManager().GetDimensionStyle('ISO-25').GetDimensionStyleTextOptions().Height
+```
+
+- Set the fit scale **before** the height or the millimetre value is multiplied by whatever factor the
+  style already carries. `dsDimensionScale_e`: 1 = use scale factor, 2 = scale according to sheet.
+  `GetDimensionScale(method, [ref]double)` reads it back.
+- `InsertRotatedDimension(ext1[3], ext2[3], dimLine[3], string, rotationRad)` - the string is a
+  **text override, not a style name**: passing `'AA-DIM'` left the dimension on the active style and
+  printed `AA-DIM` as its text.
+- `GeneralDimension.TextOverride = '%%c23'` renders `Ø23`. `.Measurement` still reports the true
+  `23.0`, so assert on `Measurement` and let the override carry the presentation.
+- A `DBText` is already on `Standard`: `SetObjectTextStyle` and `SetTextStyleName($e,'Standard')` raise
+  `E_INVALIDARG`. Set `.Height`.
+- A dash-dot centre line needs no linetype loaded - emit long-dash / short-dot segments (14 mm dash,
+  1.4 mm dot, 3 mm gap at 283 mm part height).
+
+### Save, reopen, and the entity-binding drift
+
+`SaveAs($path, 28, [ref]$err)` over COM returned `0` and wrote a DWG that reopened with every layer
+intact, so the "`SaveAs` is obsolete" rule is an **HTTP** finding that does not port.
+`OpenDocument(path, option)` takes **two** arguments (`OpenDocument2` adds `dsEncoding_e`),
+`CloseDocument($path, $false)` closes by path, and `GetPathName()` is the only document identity read
+- `GetDocumentName`, `GetDocumentFilePath` and `GetDocumentCount` are not on `IDispatch`.
+
+The drift to expect: `IModel.GetEntities()` enumerated a 43-entity untitled document in one PowerShell
+process and threw `GetEntities ... MethodNotFound` on the *same* document after `SaveAs` made it
+file-backed, while `GetModel()` and `GetLayerManager()` kept answering. Binding strength on the
+marshalled object is not stable across processes, so **capture entity read-backs in the script that
+drew them** and use a layer read-back plus a PNG export as the after-the-fact proof of a save.
+
 
 ## Tables over COM
 

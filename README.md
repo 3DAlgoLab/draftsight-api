@@ -25,7 +25,7 @@ The sessions that produced it also settled the parts of the API that are not in 
 (these findings are mostly on the HTTP path, which is where the surprises are):
 
 - API file I/O is confined to `C:\ProgramData\Dassault Systemes\DraftSight\`; every file crossing that boundary has to be staged there first
-- `SaveAs` is obsolete and fails for every option; `SaveAs2` is the call that works
+- `SaveAs` is obsolete on the HTTP path and fails for every option there, where `SaveAs2` is the call that works. Over COM it is the reverse in practice: `SaveAs($path, 28, [ref]$err)` returns `0` and writes a reopenable DWG
 - `RunCommand` reports `Succeeded` for commands that do not exist - there is no `ZoomExtents`, the command is `ZoomFit`
 - `ExportToEmf` takes the jsServer down; `GetDocuments` preceded a crash
 
@@ -88,6 +88,9 @@ skills/draftsight-api/
 │   ├── com-inspect.ps1       read the live selection over COM
 │   ├── com-draw-example.ps1  draw, fit, export - the minimal COM loop
 │   ├── com-table.ps1         CSV to a sized DraftSight table, verified by read-back
+│   ├── com-section-hatch.ps1 hatched section: layers, point-loop hatch, dimensions, save + reopen proof
+│   ├── com-plot-frames.ps1   find every sheet frame in model space, plot one PDF per frame
+│   ├── verify-plot.py        check a plotted PDF: page size, ink margins, vector vs rasterised colour
 │   ├── ds-call.sh        handshake + one-call API client
 │   ├── decompile-chm.sh  regenerate docs/ from the installed DraftSight help
 │   └── html2txt.sh       strip tags from help pages for grepping
@@ -102,11 +105,14 @@ The rules that cost the most to rediscover:
 - Echo `{id, macroId, type}` back verbatim on every HTTP call; `macroId` is a session epoch that resets when DraftSight restarts.
 - HTTP file I/O is confined to `C:\ProgramData\Dassault Systemes\DraftSight\`; any file crossing the boundary must be staged there first. COM writes anywhere.
 - Enum parameters take symbolic names as strings (`"dsDocumentSave_R2018_DWG"`), not integers.
-- `SaveAs` is obsolete - use `SaveAs2`.
+- `SaveAs` is obsolete on HTTP - use `SaveAs2`. Over COM, `SaveAs($path, 28, [ref]$err)` is the one that works; `0` means saved.
 - `ExportTo*` and `SaveAs2` return values are evidence; `RunCommand`'s `"Succeeded"` is not.
 - DraftSight command names are not AutoCAD's: there is no `ZoomExtents`, the command is `ZoomFit`.
 - Over COM, `SelectByPolygon` needs flat x,y,z triples and returns `False` for the wrong shape - a silent no-op, not an error. `SelectByWindow` works via `IApplication.GetMathUtility().CreatePoint()`; the factory is on the application, not the document.
 - Absence from a filtered `Get-Member` list proves nothing; an anchored regex hid `SetColumnWidthAt` and produced a wrong rule that had to be retracted.
+- Creating an object over COM hands it back in an out slot that must be given a live IDispatch: pass an existing `ILayer` / `IDimensionStyle` to `CreateLayer` / `CreateDimensionStyle`; `[ref]$null`, `Type.Missing` and reflection all fail differently.
+- Hatch over COM works only through `InsertHatchByBoundary(counts, points, pattern, scale, angle)`; the by-entities and by-internal-points overloads return `null` silently.
+- Dimension text height, arrows and offsets are style-level; normalise `SetDimensionScale(1, 1.0)` before setting `Height` or the value is scaled by the style's fit factor. `%%c23` renders with the diameter sign while `.Measurement` still reports the true 23.0.
 
 ## Develop
 

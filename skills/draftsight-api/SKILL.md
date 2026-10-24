@@ -46,7 +46,7 @@ $app.Zoom(0, $null, $null)                   # fit before export; exports the cu
 $doc.GetDocumentExporter().ExportToPng('D:\out.png', $true)
 ```
 
-Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, the selection-set table, and the table API: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`, `scripts/com-table.ps1`.
+Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, the selection-set table, the table API, and the out-parameter trick for creating layers, styles and hatches: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`, `scripts/com-table.ps1`, `scripts/com-section-hatch.ps1`.
 
 **Parity rule: if the JS API has it, COM almost certainly has it.** The shipped JS layer (`install_dir\APISDK\djLibrary\ds<Interface>.js`) is a thin shim over the same object model and is **not a stable contract** - its arities drift and it hides out-parameters (`ExportToPdf`: 4 args in JS, 5 in the type library). Use the stubs to learn *what exists*, never the calling convention; `Get-Member` on the live `__ComObject` is the contract. Names differ: JS/HTTP say `dsPrintManager`, the COM type library says `IPrintManager`.
 
@@ -105,6 +105,9 @@ over COM.
 | `RunCommand` | `"dsRunCommand_Succeeded"` | **No** - returned success while DraftSight printed `Unrecognized command`. Verify by reading geometry or the command window. |
 | `Zoom`, `StartUndoRecord`, `StopUndoRecord`, `CloseDocument` | `null` | Neutral - `null` means no return value, not failure |
 | `OpenDocument2` | `null` | **Failure** - a real open returns a document object |
+| `CreateLayer` / `CreateDimensionStyle` result code | `0` or `1` | **No** - both values seen on successful creations; trust the `GetLayer()` / `GetDimensionStyle()` read-back |
+| `InsertHatchByEntities` / `InsertHatchByEntitiesEx` / `InsertHatchByInternalPoints` over COM | `null` | **Failure** - a silent no-op; only `InsertHatchByBoundary` with point arrays draws |
+| `IModel.GetEntities()` over COM | entities, or `MethodNotFound` | **Drifts** - worked on an untitled document, threw on the same document after `SaveAs`; read geometry back in the script that drew it |
 
 ## Do not call
 
@@ -114,7 +117,7 @@ the COM call is safe, or the other way round.
 | Call | Why |
 |---|---|
 | `dsDocumentExporter.ExportToEmf` | returned empty, then `jsServer connection Failed`, then DraftSight restarted |
-| `dsDocument.SaveAs` | obsolete, superseded by `SaveAs2`; returns `GenericError` for every option |
+| `dsDocument.SaveAs` | **HTTP only**: obsolete, superseded by `SaveAs2`; returns `GenericError` for every option. Over COM it is the call that works - `SaveAs($path, 28, [ref]$err)` returned `0` and wrote a DWG that reopened with every layer intact |
 | `dsApplication.GetDocuments` | HTTP only: the only chain that preceded an unexplained crash; prefer `GetActiveDocument`. Over COM it is fine - used across 4 open documents on 26.4.0.5067 with no fault |
 
 ## Drawing discipline
@@ -130,6 +133,11 @@ the COM call is safe, or the other way round.
 - Erase any probe entity in the same script that created it. Entities have no `Delete()`; use `ISketchManager.SetObjectErased($e, $true)`.
 - **PowerShell written from bash: `param()` must be the first statement** - a leading comment line makes the whole block a silent no-op and `-Switch` arguments then do nothing. `$` inside a double-quoted bash string is eaten, and backtick escapes vanish through the two layers, so write the script to a file and run it with `-File` instead of `-Command`.
 - **Grep the working tree for earlier `*.ps1` before probing the API from scratch.** A previous session's scratch script is verified prior art. Re-deriving its signatures is how confident wrong claims get written into this skill.
+- **Out-object slots need a live IDispatch.** `CreateLayer` / `CreateDimensionStyle` fail on `[ref]$null` (`NullReferenceException`), on `Type.Missing` (`ArgumentException`) and on reflection (`DISP_E_TYPEMISMATCH`); pass an existing object of the same interface in the slot - `$lm.CreateLayer('X', $lm.GetLayer('0'), $res)`.
+- **`[math]::Pi`, never `[math]::PI()`.** `Pi` is a property; the parens turn it into a method call and PowerShell reports `[System.Math] does not contain a method named 'PI'`.
+- **Batch the unknowns into one probe script.** Label the blocks A/B/C, wrap each in `try/catch`, print `OK <label>` or `ERR <label> <ExceptionType>`. Five independent API questions cost five DraftSight round trips on 2026-10-24 for no reason; one 12-line probe with four labelled blocks covers the same ground in one.
+- **Size annotation against the part, then prove legibility.** 12 mm text on a 283 mm part reads on screen, 2.5 mm does not; export a `Zoom(2, ll, ur)` window over the dimension stack rather than trusting a whole-part export where every number is unreadable.
+- **Geometry you invented has to say so on the sheet.** A sketch that omits the outside diameter is not an invitation to pick one silently: draw it, dimension it as `(REF)`, and footnote `OUTSIDE DIA NOT DIMENSIONED IN SOURCE SKETCH - DRAWN %%c85 (REF)`.
 
 ## Plotting sheets to PDF
 
@@ -196,6 +204,7 @@ per-entity props     -> get_StartAngle, get_Radius, ...
 
 For a visual check, `ExportToPng` gives clean chrome-free line art. It exports **the current view, not full extents**, so `dsModel.Zoom(0,...)` (Fit) first, and expect edge clipping - a margin-corrected `Zoom(2, ll, ur)` avoids it.
 
+A save is proven from disk, not from the save call: `OpenDocument($path, 0)` -> read the layers back -> `CloseDocument($path, $false)`. That confirms the version code actually wrote a file DraftSight can re-read. Never close a document the user opened.
 Screen capture is the fallback only: `PrintWindow` returns `False` on DraftSight's Qt5 GL surface; `CopyFromScreen` over `GetWindowRect` works but includes ribbon and palettes.
 
 ## Official reference (bundled, 76 MB)
