@@ -46,9 +46,13 @@ $app.Zoom(0, $null, $null)                   # fit before export; exports the cu
 $doc.GetDocumentExporter().ExportToPng('D:\out.png', $true)
 ```
 
-Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, the selection-set table, the table API, and the out-parameter trick for creating layers, styles and hatches: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`, `scripts/com-table.ps1`, `scripts/com-section-hatch.ps1`.
+Signatures, the ROT activation trap, SAFEARRAY/`[ref]` marshalling, the selection-set table, the table API, and the out-parameter trick for creating layers, styles and hatches: `references/com-api.md`. Runnable: `scripts/com-inspect.ps1`, `scripts/com-draw-example.ps1`, `scripts/com-table.ps1`, `scripts/com-section-hatch.ps1`, `scripts/com-signature-oracle.ps1` (offline signatures), `scripts/com-entities-dump.ps1` (early-bound inventory).
 
-**Parity rule: if the JS API has it, COM almost certainly has it.** The shipped JS layer (`install_dir\APISDK\djLibrary\ds<Interface>.js`) is a thin shim over the same object model and is **not a stable contract** - its arities drift and it hides out-parameters (`ExportToPdf`: 4 args in JS, 5 in the type library). Use the stubs to learn *what exists*, never the calling convention; `Get-Member` on the live `__ComObject` is the contract. Names differ: JS/HTTP say `dsPrintManager`, the COM type library says `IPrintManager`.
+**Parity rule: if the JS API has it, COM almost certainly has it.** The shipped JS layer (`install_dir\APISDK\djLibrary\ds<Interface>.js`) is a thin shim over the same object model and is **not a stable contract** - its arities drift and it hides out-parameters (`ExportToPdf`: 4 args in JS, 5 in the type library). Use the stubs to learn *what exists*, never the calling convention. The contract is the **type library**
+(`APISDK\tlb\DraftSight.Interop.dsAutomation.dll`, read offline with `scripts/com-signature-oracle.ps1`).
+`Get-Member` on a live `__ComObject` shows only what the server exposes through `IDispatch` at that
+moment: it invented `GetEntities` on `IModel`, which the type library does not declare, and it types
+every array parameter as `Object`, which is what makes the late-bound path have to guess. Names differ: JS/HTTP say `dsPrintManager`, the COM type library says `IPrintManager`.
 
 ## HTTP/JSON transport - fallback, broken on this machine
 
@@ -107,7 +111,8 @@ over COM.
 | `OpenDocument2` | `null` | **Failure** - a real open returns a document object |
 | `CreateLayer` / `CreateDimensionStyle` result code | `0` or `1` | **No** - both values seen on successful creations; trust the `GetLayer()` / `GetDimensionStyle()` read-back |
 | `InsertHatchByEntities` / `InsertHatchByEntitiesEx` / `InsertHatchByInternalPoints` over COM | `null` | **Failure** - a silent no-op; only `InsertHatchByBoundary` with point arrays draws |
-| `IModel.GetEntities()` over COM | entities, or `MethodNotFound` | **Drifts** - worked on an untitled document, threw on the same document after `SaveAs`; read geometry back in the script that drew it |
+| `IModel.GetEntities()` over COM | sometimes answers, else `MethodNotFound` | **Not a contract** - `IModel` has no `GetEntities` in the type library; what answered was an undocumented `IDispatch` member. Never build on it |
+| `ISketchManager.GetEntities(null, null, out ids, out ents)` early-bound | whole-model inventory | **Yes** - 56 entities / 56 type ids on a known 56-entity drawing, 2026-10-24; `scripts/com-entities-dump.ps1` |
 
 ## Do not call
 
@@ -136,6 +141,17 @@ the COM call is safe, or the other way round.
 - **Out-object slots need a live IDispatch.** `CreateLayer` / `CreateDimensionStyle` fail on `[ref]$null` (`NullReferenceException`), on `Type.Missing` (`ArgumentException`) and on reflection (`DISP_E_TYPEMISMATCH`); pass an existing object of the same interface in the slot - `$lm.CreateLayer('X', $lm.GetLayer('0'), $res)`.
 - **`[math]::Pi`, never `[math]::PI()`.** `Pi` is a property; the parens turn it into a method call and PowerShell reports `[System.Math] does not contain a method named 'PI'`.
 - **Batch the unknowns into one probe script.** Label the blocks A/B/C, wrap each in `try/catch`, print `OK <label>` or `ERR <label> <ExceptionType>`. Five independent API questions cost five DraftSight round trips on 2026-10-24 for no reason; one 12-line probe with four labelled blocks covers the same ground in one.
+- **Read the type library before probing the live app.** `scripts/com-signature-oracle.ps1` prints real
+  in/out/ref signatures from the shipped interop assembly in about two seconds, DraftSight closed, no
+  document touched. Both of 2026-10-24's costliest mistakes were readable off it: `InsertRotatedDimension`
+  has a fourth parameter named `DimensionTextOverride` (a text override, not a style name), and `IModel`
+  has no `GetEntities` at all.
+- **`Object`-typed parameters are unreachable over late binding.** PowerShell's COM binder refuses `$null`
+  for them (`NullReferenceException`) and refuses to box a scalar into them
+  (`int "0" ... cannot be converted to "Object"`) - the real mechanism behind `Zoom(0, $null, $null)`
+  failing, not a COM enum quirk. Early binding takes them in one line and needs no new software:
+  `Add-Type -Path $interop` then inline C#, and PowerShell 5.1 is .NET Framework so `GetActiveObject`
+  still exists there. See `scripts/com-entities-dump.ps1`.
 - **Size annotation against the part, then prove legibility.** 12 mm text on a 283 mm part reads on screen, 2.5 mm does not; export a `Zoom(2, ll, ur)` window over the dimension stack rather than trusting a whole-part export where every number is unreadable.
 - **Geometry you invented has to say so on the sheet.** A sketch that omits the outside diameter is not an invitation to pick one silently: draw it, dimension it as `(REF)`, and footnote `OUTSIDE DIA NOT DIMENSIONED IN SOURCE SKETCH - DRAWN %%c85 (REF)`.
 
@@ -197,10 +213,15 @@ Runnable: `scripts/com-plot-frames.ps1` (find sheet frames, plot one PDF per fra
 Prefer geometry read-back over pixels; it is deterministic and never touches the render pipeline.
 
 ```
-GetEntities(0, [])   -> {EntitiesArray:[{id,macroId,type}], EntityTypeLongArray:[...]}
+ISketchManager.GetEntities(null, null, out ids, out ents)  -> whole-model entity array + type ids
+sk.GetEntities(null, @('2-HATCH'), out ids, out ents)      -> per-layer count, same call
 GetBoundingBox()     -> {X1,X2,Y1,Y2,Z1,Z2}
 per-entity props     -> get_StartAngle, get_Radius, ...
 ```
+
+The supported enumerator is **early-bound** (`scripts/com-entities-dump.ps1`): late binding cannot pass
+the typed `null` its `SelectionFilter` parameter needs. The `IModel.GetEntities()` that earlier revisions
+of this skill told you to call is not a type-library member - see the trust table.
 
 For a visual check, `ExportToPng` gives clean chrome-free line art. It exports **the current view, not full extents**, so `dsModel.Zoom(0,...)` (Fit) first, and expect edge clipping - a margin-corrected `Zoom(2, ll, ur)` avoids it.
 

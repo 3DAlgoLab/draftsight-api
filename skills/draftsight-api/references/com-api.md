@@ -82,6 +82,8 @@ IDocument         GetPathName()                       # there is no GetName() ov
 ILayerManager     CreateLayer(string, ILayer out, dsCreateObjectResult_e)   # out slot must be a live IDispatch
 IDimensionStyleManager CreateDimensionStyle(string, IDimensionStyle out, dsCreateObjectResult_e)
 ISketchManager    InsertHatchByBoundary(int[] loopCounts, double[] xyzLoops, string pattern, double scale, double angle)
+ISketchManager    GetEntities(SelectionFilter filter, string[] layerNames, out object typeIdArray, out object entityArray)   # 4 args; early-bound only
+IModel            # has NO GetEntities - not declared anywhere in the type library
 ISketchManager    InsertRotatedDimension(double[] ext1, double[] ext2, double[] dimLine, string textOverride, double rotationRad)
 ISketchManager    InsertSimpleNote(double x, double y, double z, double height, double angle, string text)
 IApplication      OpenDocument(string, dsDocumentOpenOption_e)   # 2 args; OpenDocument2 adds dsEncoding_e
@@ -212,12 +214,100 @@ intact, so the "`SaveAs` is obsolete" rule is an **HTTP** finding that does not 
 `CloseDocument($path, $false)` closes by path, and `GetPathName()` is the only document identity read
 - `GetDocumentName`, `GetDocumentFilePath` and `GetDocumentCount` are not on `IDispatch`.
 
-The drift to expect: `IModel.GetEntities()` enumerated a 43-entity untitled document in one PowerShell
-process and threw `GetEntities ... MethodNotFound` on the *same* document after `SaveAs` made it
-file-backed, while `GetModel()` and `GetLayerManager()` kept answering. Binding strength on the
-marshalled object is not stable across processes, so **capture entity read-backs in the script that
-drew them** and use a layer read-back plus a PNG export as the after-the-fact proof of a save.
+There is no binding drift story here. **`IModel.GetEntities()` is not in the type library at all** - all
+723 interop types were enumerated on 2026-10-24 and the only declarers of `GetEntities` are
+`IBlockDefinition` (out, out), `IGroup` (out, out), `IHighlightSet` (out, out) and `ISketchManager`
+(in SelectionFilter, in Object LayerNamesStrArray, out Object EntityTypeLongArray, out Object
+EntitiesArray). What answered as `IModel.GetEntities()` is a member the running server exposes through
+`IDispatch` that the type library does not declare, so it appearing on one document and not on another
+was never a question of binding strength - it was never supported, and `MethodNotFound` was the honest
+answer.
 
+Retacted the same day it was written: an earlier revision of this file, and the trust-table row that
+came with it, called this "binding strength drifts after `SaveAs`". That reading came from runtime
+`Get-Member` and it was wrong. The fix is to read the type library before the live app -
+`scripts/com-signature-oracle.ps1` - and to enumerate entities through the supported early-bound call,
+which returned 56 entities and 56 type ids from a known 56-entity drawing on its first attempt
+(`scripts/com-entities-dump.ps1`).
+
+
+## Early binding: the shipped interop assembly
+
+DraftSight ships a tlbimp wrapper over its own type library: `install_dir\APISDK\tlb\DraftSight.Interop.dsAutomation.dll`
+(26.4.0.43 on 26.4.0.5067, 723 types, every interface `IsImport`). It is the only complete and honest
+signature source available, and it reads with DraftSight closed:
+
+```powershell
+scripts\com-signature-oracle.ps1                                                # the hot interfaces
+scripts\com-signature-oracle.ps1 -Search ObjectName                             # who declares it
+scripts\com-signature-oracle.ps1 -Types ISketchManager -Method GetEntities -Enums
+```
+
+Read the signature before the first live probe. The two costliest mistakes of 2026-10-24 were both
+readable off the type library in one line each: `InsertRotatedDimension`'s fourth parameter is named
+`DimensionTextOverride` - it is a text override, and passing a style name there prints the style name as
+the dimension text - and `IModel` declares no `GetEntities` at all.
+
+What late binding cannot express: every array parameter is typed `Object` in the typelib, and PowerShell's
+COM binder **refuses `$null` for an `Object` parameter** (`NullReferenceException`) **and refuses to box a
+scalar into it** (`int "0" ... cannot be converted to "Object"`). That is the real mechanism behind
+`Zoom(0, $null, $null)` failing over late binding, not the COM enum marshalling quirk an earlier revision
+of this file claimed.
+
+The same call early-bound, from PowerShell 5.1, with no new software (PS 5.1 is .NET Framework 4.x, so
+`Marshal.GetActiveObject` still exists there):
+
+```powershell
+$interop = 'C:\Program Files\Dassault Systemes\DraftSight\APISDK\tlb\DraftSight.Interop.dsAutomation.dll'
+Add-Type -Path $interop        # LOAD it: a bare -ReferencedAssemblies compiles, then dies at run time
+                               # with "cannot load file or assembly" and looks like a broken DLL
+$src = @'
+using System; using System.Runtime.InteropServices;
+using DraftSight.Interop.dsAutomation;
+public static class EB {
+  public static void Run() {
+    IApplication app = (IApplication)Marshal.GetActiveObject("DraftSight.Application");
+    Document doc = app.GetActiveDocument();
+    ISketchManager sk = doc.GetModel().GetSketchManager();
+    object types, ents;
+    sk.GetEntities(null, null, out types, out ents);   // the typed null a binder can never pass
+    System.Array a = (System.Array)types; System.Array b = (System.Array)ents;
+    System.Console.WriteLine("entities=" + b.Length + " typeIds=" + a.Length);
+  }
+}
+'@
+Add-Type -TypeDefinition $src -Language CSharp -ReferencedAssemblies @($interop,'mscorlib','System','System.Core')
+[EB]::Run()
+```
+
+Measured 2026-10-24 against a known 56-entity section drawing: `entities=56`, `typeIds=56`, first six type
+ids all `21` - the twelve lines drawn first. The same run read `GetLayer('1-OUTLINE').LineWeight` back as
+the symbolic **`dsLnWt_035`**, where the late-bound path returns a bare `35`; typed enums retire the "is
+`0` success?" guessing the trust table has to carry everywhere else. Runnable version with a per-layer
+breakdown and a type histogram: `scripts/com-entities-dump.ps1`.
+
+That run's histogram is a usable calibration because it was checked against a drawing whose contents
+were known when it was drawn: `21=47` lines (12 outline + 29 centre segments + 6 leader and rule
+lines), `24=3` texts, `55=4` rotated dimensions, `71=2` hatches - summing to exactly 56, and the
+per-layer split (12 / 2 / 29 / 4 / 9) matched the layers they were drawn onto. Since the type library
+publishes no `*EntityType` enum, treat those four ids as measured and calibrate any new one the same
+way: known drawing first, id afterwards.
+
+Five traps on this path, each one hit during the 2026-10-24 spike:
+
+- `-Language "C#"` does not exist in PowerShell 5.1; the accepted names are **`CSharp`**, `CSharpVersion3`, `CSharpVersion2`, `VisualBasic`, `JScript`.
+- The interop's interface names are the coclass-flavoured ones: `Application`, `Document`, `Layer`, `Line`, `Hatch`, `SimpleNote`. **`IEntity` is not one of them** - a `using`-clean compile still fails with `'IEntity' does not exist`; ask the oracle with `-Search ObjectName` for the declaring interface.
+- Entity array elements arrive as `System.__ComObject`, so read a property either through a cast to the interface that declares it, or through `GetType().InvokeMember(name, BindingFlags.GetProperty, ...)`.
+- There is **no `*EntityType` enum** among the 723 types, so `EntityTypeLongArray` values have no published names: calibrate the ids you depend on against one drawing whose contents you already know.
+- The `SelectionFilter` parameter is an interface with **zero constructors**, so late binding cannot build one either. `null` is the only useful argument and only early binding can pass it; a real filter object is obtainable from `ISelectionManager.GetSelectionFilter()` - found by reading the type library on 2026-10-24, not yet exercised.
+
+For creating objects the type library declares real out parameters -
+`CreateLayer(in String Name, out Layer Layer, out dsCreateObjectResult_e Result)` and
+`CreateDimensionStyle(in String Name, out DimensionStyle DimensionStyle, out dsCreateObjectResult_e Result)`
+- so the "hand a live IDispatch to the out slot" workaround above is an artefact of *late* binding, not
+of the API. It remains what the PowerShell-only scripts use, because it needs no compiled C#; the
+early-bound form was deliberately left untested, since exercising it creates layers in a document the
+user has open.
 
 ## Tables over COM
 

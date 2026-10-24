@@ -89,6 +89,8 @@ skills/draftsight-api/
 │   ├── com-draw-example.ps1  draw, fit, export - the minimal COM loop
 │   ├── com-table.ps1         CSV to a sized DraftSight table, verified by read-back
 │   ├── com-section-hatch.ps1 hatched section: layers, point-loop hatch, dimensions, save + reopen proof
+│   ├── com-signature-oracle.ps1 read real in/out/ref signatures off the shipped interop assembly, offline
+│   ├── com-entities-dump.ps1 early-bound entity inventory per layer - verification without screenshots
 │   ├── com-plot-frames.ps1   find every sheet frame in model space, plot one PDF per frame
 │   ├── verify-plot.py        check a plotted PDF: page size, ink margins, vector vs rasterised colour
 │   ├── ds-call.sh        handshake + one-call API client
@@ -110,6 +112,8 @@ The rules that cost the most to rediscover:
 - DraftSight command names are not AutoCAD's: there is no `ZoomExtents`, the command is `ZoomFit`.
 - Over COM, `SelectByPolygon` needs flat x,y,z triples and returns `False` for the wrong shape - a silent no-op, not an error. `SelectByWindow` works via `IApplication.GetMathUtility().CreatePoint()`; the factory is on the application, not the document.
 - Absence from a filtered `Get-Member` list proves nothing; an anchored regex hid `SetColumnWidthAt` and produced a wrong rule that had to be retracted.
+- The type library is the contract, not `Get-Member` on a live `__ComObject`: `scripts/com-signature-oracle.ps1` reads `APISDK\tlb\DraftSight.Interop.dsAutomation.dll` and prints true in/out/ref signatures before the first live probe.
+- `Object`-typed COM parameters refuse `$null` and refuse scalars over late binding, so some calls - `ISketchManager.GetEntities`, `Zoom` with an unused range - are simply unreachable from plain PowerShell. `Add-Type -Path $interop` plus inline C# reaches them, with typed `out` parameters and symbolic enums.
 - Creating an object over COM hands it back in an out slot that must be given a live IDispatch: pass an existing `ILayer` / `IDimensionStyle` to `CreateLayer` / `CreateDimensionStyle`; `[ref]$null`, `Type.Missing` and reflection all fail differently.
 - Hatch over COM works only through `InsertHatchByBoundary(counts, points, pattern, scale, angle)`; the by-entities and by-internal-points overloads return `null` silently.
 - Dimension text height, arrows and offsets are style-level; normalise `SetDimensionScale(1, 1.0)` before setting `Height` or the value is scaled by the style's fit factor. `%%c23` renders with the diameter sign while `.Measurement` still reports the true 23.0.
